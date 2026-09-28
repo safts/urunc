@@ -472,3 +472,9 @@ APIC
 makefs
 Nachiket
 archs
+argjson
+strconv
+Atoi
+gsub
+getpath
+ints

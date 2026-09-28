@@ -211,3 +211,60 @@ During cleanup, these changes are reverted:
 - The `containerd` configuration file is restored to the pre-`urunc-deploy` state.
 - The `urunc.io/urunc-runtime=true` label is removed from the Node.
 - The RBAC role, the `urunc-deploy` Pod and the runtime class are removed.
+
+### Customizing the urunc configuration
+
+`urunc-deploy` installs a default `config.toml`. Every value in it can be
+overridden at deploy time via environment variables on the `urunc-deploy`
+DaemonSet. A variable set to a non-empty value replaces the corresponding value
+in the installed `/etc/urunc/config.toml`; unset or empty variables retain the
+shipped default.
+
+Each variable name is the TOML path of the setting, upper-cased, with `.` and `-`
+replaced by `_`, and prefixed with `URUNC_`:
+
+| Configuration key | Environment variable | Type |
+| --- | --- | --- |
+| `log.level` | `URUNC_LOG_LEVEL` | string |
+| `log.syslog` | `URUNC_LOG_SYSLOG` | bool |
+| `timestamps.enabled` | `URUNC_TIMESTAMPS_ENABLED` | bool |
+| `timestamps.destination` | `URUNC_TIMESTAMPS_DESTINATION` | string |
+| `runtime.libcontainer` | `URUNC_RUNTIME_LIBCONTAINER` | bool |
+| `runtime.vAccel` | `URUNC_RUNTIME_VACCEL` | bool |
+| `monitors.<monitor>.default_memory_mb` | `URUNC_MONITORS_<MONITOR>_DEFAULT_MEMORY_MB` | int |
+| `monitors.<monitor>.default_vcpus` | `URUNC_MONITORS_<MONITOR>_DEFAULT_VCPUS` | int |
+| `monitors.<monitor>.path` | `URUNC_MONITORS_<MONITOR>_PATH` | string |
+| `monitors.qemu.data_path` | `URUNC_MONITORS_QEMU_DATA_PATH` | string |
+| `monitors.qemu.vhost` | `URUNC_MONITORS_QEMU_VHOST` | bool |
+| `monitors.<monitor>.socket_path` | `URUNC_MONITORS_<MONITOR>_SOCKET_PATH` | string |
+| `extra_binaries.virtiofsd.path` | `URUNC_EXTRA_BINARIES_VIRTIOFSD_PATH` | string |
+| `extra_binaries.virtiofsd.options` | `URUNC_EXTRA_BINARIES_VIRTIOFSD_OPTIONS` | string |
+
+`<monitor>` is one of the monitors declared in `config.toml` (`qemu`,
+`firecracker`, `cloud-hypervisor`, `spt`, `hvt`, `hyperlight-unikraft`), e.g.
+`URUNC_MONITORS_HVT_DEFAULT_VCPUS`. Only the keys actually present for a monitor
+in `config.toml` are overridable; `socket_path` is declared for `qemu`,
+`firecracker` and `cloud-hypervisor`, the monitors that support a control socket.
+
+Example — raise the default QEMU memory and enable debug logging:
+
+```yaml
+        env:
+          - name: URUNC_LOG_LEVEL
+            value: "debug"
+          - name: URUNC_MONITORS_QEMU_DEFAULT_MEMORY_MB
+            value: "1024"
+```
+
+Overrides are validated before any change is made to the host. An invalid
+override aborts the installation with a descriptive error, leaving no urunc
+artifacts, configuration, or `containerd` changes behind. The following are
+rejected:
+
+- a non-integer value, zero, or a value exceeding the maximum signed 64-bit integer,
+  for an integer key (e.g. `*_DEFAULT_MEMORY_MB`, `*_DEFAULT_VCPUS`);
+- a value other than `true` or `false` for a boolean key (e.g. `URUNC_LOG_SYSLOG`, `URUNC_TIMESTAMPS_ENABLED`);
+- an unrecognised `URUNC_*` variable that does not map to a key in `config.toml` (e.g. a typo).
+
+All detected problems are reported together. The `urunc-deploy` Pod logs contain
+the corresponding `ERROR:` lines when an installation does not complete.
