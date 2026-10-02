@@ -1132,6 +1132,14 @@ func (u *Unikontainer) Delete() error {
 		}
 	}
 
+	// The monitor has exited, but its tap device and the redirect to it stay
+	// in the sandbox's network namespace unless urunc was asked to kill the
+	// container. A container restarted in the same pod would then find the
+	// namespace taken and boot without a network. Best effort, like the rest.
+	if err := u.releaseSandboxNet(); err != nil {
+		uniklog.Errorf("failed to release the sandbox network: %v", err)
+	}
+
 	// Restore the block volume mounts that were unmounted during create,
 	// so their sources become discoverable by future containers. Do it in
 	// a best-effort way, since a failure to restore a mount should not
@@ -1155,6 +1163,50 @@ func (u *Unikontainer) Delete() error {
 	}
 
 	return os.RemoveAll(u.BaseDir)
+}
+
+// releaseSandboxNet removes the tap devices that no monitor holds open from
+// the sandbox's network namespace, with the redirect on the container
+// interface. Only a namespace the container joined by path outlives its
+// monitor; one created for the container went away with the monitor, and its
+// tap with it. A path that is gone, with its pod, has nothing left either.
+//
+// It joins the namespace by that path alone. The monitor's /proc entry, which
+// joinSandboxNetNs falls back to, names whatever process has its pid by now.
+func (u *Unikontainer) releaseSandboxNet() error {
+	netNsPath := ""
+	for _, ns := range u.Spec.Linux.Namespaces {
+		if ns.Type == specs.NetworkNamespace {
+			netNsPath = ns.Path
+		}
+	}
+	if netNsPath == "" {
+		return nil
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		// setns(2) moves only this thread. Leaving it locked makes the runtime
+		// discard the thread with the goroutine, so no other code runs in the
+		// sandbox's namespace by accident.
+		runtime.LockOSThread()
+		fd, err := unix.Open(netNsPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			errCh <- fmt.Errorf("error opening namespace path: %w", err)
+			return
+		}
+		defer func() { _ = unix.Close(fd) }()
+		if err := unix.Setns(fd, unix.CLONE_NEWNET); err != nil {
+			errCh <- fmt.Errorf("error joining namespace: %w", err)
+			return
+		}
+		errCh <- network.ReclaimStaleUruncTaps()
+	}()
+	err := <-errCh
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 // joinSandboxNetns joins the network namespace of the sandbox
@@ -1182,6 +1234,7 @@ func (u Unikontainer) joinSandboxNetNs() error {
 	if err != nil {
 		return fmt.Errorf("error opening namespace path: %w", err)
 	}
+	defer func() { _ = unix.Close(fd) }()
 	err = unix.Setns(int(fd), unix.CLONE_NEWNET)
 	if err != nil {
 		return fmt.Errorf("error joining namespace: %w", err)
