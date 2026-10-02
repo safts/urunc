@@ -136,7 +136,24 @@ kubectl delete -k https://github.com/urunc-dev/urunc//deployment/urunc-deploy/ur
 kubectl apply -k https://github.com/urunc-dev/urunc//deployment/urunc-deploy/urunc-cleanup/overlays/k3s?ref=main
 ```
 
-After the cleanup is completed and the `urunc-deploy` Pod is terminated:
+Wait for the cleanup to finish on every node. The cleanup Pod restarts
+`containerd`, removes the `urunc.io/urunc-runtime` label from its node, and
+then exits on its own. The cleanup is complete once no node has the label
+anymore, i.e. the following command prints `No resources found`:
+
+```bash
+kubectl get nodes -l urunc.io/urunc-runtime
+```
+
+On k3s, the cleanup restarts the k3s service instead of `containerd`. On server
+nodes this briefly takes down the API server, so `kubectl` may report a
+connection error for a few seconds; just retry the command.
+
+> **Note:** Do not delete the cleanup DaemonSet before the label is gone.
+> Doing so interrupts the restart, leaving any running `urunc` Pods
+> stuck in `Terminating`.
+
+Then remove the remaining resources:
 
 ```bash
 kubectl delete -k https://github.com/urunc-dev/urunc//deployment/urunc-deploy/urunc-cleanup/overlays/k3s?ref=main
@@ -171,7 +188,20 @@ kubectl delete -f https://raw.githubusercontent.com/urunc-dev/urunc/main/deploym
 kubectl apply -f https://raw.githubusercontent.com/urunc-dev/urunc/main/deployment/urunc-deploy/urunc-cleanup/base/urunc-cleanup.yaml
 ```
 
-After the cleanup is completed:
+Wait for the cleanup to finish on every node. The cleanup Pod restarts
+`containerd`, removes the `urunc.io/urunc-runtime` label from its node, and
+then exits on its own. The cleanup is complete once no node has the label
+anymore, i.e. the following command prints `No resources found`:
+
+```bash
+kubectl get nodes -l urunc.io/urunc-runtime
+```
+
+> **Note:** Do not delete the cleanup DaemonSet before that. Doing so
+> interrupts the `containerd` restart, leaving any running `urunc` Pods
+> stuck in `Terminating`.
+
+Then remove the remaining resources:
 
 ```bash
 kubectl delete -f https://raw.githubusercontent.com/urunc-dev/urunc/main/deployment/urunc-deploy/urunc-cleanup/base/urunc-cleanup.yaml
@@ -209,5 +239,6 @@ During cleanup, these changes are reverted:
 - The `/opt/urunc` directory containing hypervisor binaries and QEMU data files is deleted.
 - The `/etc/urunc` configuration directory is deleted.
 - The `containerd` configuration file is restored to the pre-`urunc-deploy` state.
+- `containerd` and the kubelet are restarted (on k3s/rke2, the k3s/rke2 service instead).
 - The `urunc.io/urunc-runtime=true` label is removed from the Node.
 - The RBAC role, the `urunc-deploy` Pod and the runtime class are removed.
