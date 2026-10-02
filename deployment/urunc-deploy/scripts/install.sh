@@ -184,7 +184,8 @@ function wait_till_node_is_ready() {
 
     while ! [[ "${ready}" == "True" ]]; do
         sleep 2s
-        ready=$(kubectl get node $NODE_NAME -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+        # Tolerate transient API server errors while the runtime restarts
+        ready=$(kubectl get node $NODE_NAME -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}') || true
     done
 }
 
@@ -305,7 +306,6 @@ function restart_cri_runtime() {
 }
 
 function reset_runtime() {
-    kubectl label node "$NODE_NAME" urunc.io/urunc-runtime-
     restart_cri_runtime "$1"
 
     if [ "$1" == "crio" ] || [ "$1" == "containerd" ]; then
@@ -313,6 +313,15 @@ function reset_runtime() {
     fi
 
     wait_till_node_is_ready
+
+    # Remove the label only as the very last step. The cleanup DaemonSet
+    # selects nodes by this label, so removing it makes the DaemonSet
+    # controller delete this very Pod. Retry on transient API errors rather
+    # than exiting, which would restart the runtime again.
+    until kubectl label node "$NODE_NAME" urunc.io/urunc-runtime-; do
+        sleep 2s
+    done
+    echo "urunc-deploy uninstalled successfully"
 }
 
 function main() {
@@ -392,9 +401,7 @@ function main() {
             remove_artifacts
             ;;
         reset)
-            kubectl label node "$NODE_NAME" urunc.io/urunc-runtime-
             reset_runtime $runtime
-            echo "urunc-deploy uninstalled successfully"
             ;;
         *)
             print_usage
