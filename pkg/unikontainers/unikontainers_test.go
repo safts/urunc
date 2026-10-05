@@ -15,8 +15,10 @@
 package unikontainers
 
 import (
+	"runtime"
 	"testing"
 
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -108,6 +110,44 @@ func TestConfineToContainerRootfs(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+func TestMonitorVCPUs(t *testing.T) {
+	i64 := func(v int64) *int64 { return &v }
+	u64 := func(v uint64) *uint64 { return &v }
+	cpuRes := func(quota *int64, period *uint64) *specs.LinuxResources {
+		return &specs.LinuxResources{CPU: &specs.LinuxCPU{Quota: quota, Period: period}}
+	}
+	hostCPUs := uint(runtime.NumCPU()) // nolint:gosec
+
+	tests := []struct {
+		name        string
+		defaultCPUs uint
+		resources   *specs.LinuxResources
+		expected    uint
+	}{
+		{name: "no resources uses the default", defaultCPUs: 3, resources: nil, expected: 3},
+		{name: "no cpu section uses the default", defaultCPUs: 3, resources: &specs.LinuxResources{}, expected: 3},
+		{name: "zero default becomes one", defaultCPUs: 0, resources: nil, expected: 1},
+		{name: "quota without period uses the default", defaultCPUs: 3, resources: cpuRes(i64(200000), nil), expected: 3},
+		{name: "period without quota uses the default", defaultCPUs: 3, resources: cpuRes(nil, u64(100000)), expected: 3},
+		{name: "unlimited quota uses the default", defaultCPUs: 3, resources: cpuRes(i64(-1), u64(100000)), expected: 3},
+		{name: "zero period uses the default", defaultCPUs: 3, resources: cpuRes(i64(200000), u64(0)), expected: 3},
+		{name: "fractional limit rounds up to one", defaultCPUs: 3, resources: cpuRes(i64(50000), u64(100000)), expected: 1},
+		{name: "exact limit of one", defaultCPUs: 3, resources: cpuRes(i64(100000), u64(100000)), expected: 1},
+		{name: "limit of two", defaultCPUs: 1, resources: cpuRes(i64(200000), u64(100000)), expected: min(2, hostCPUs)},
+		{name: "partial cpu rounds up", defaultCPUs: 1, resources: cpuRes(i64(150000), u64(100000)), expected: min(2, hostCPUs)},
+		{name: "non-default period", defaultCPUs: 1, resources: cpuRes(i64(100000), u64(50000)), expected: min(2, hostCPUs)},
+		{name: "huge quota is capped at the host cpus", defaultCPUs: 1, resources: cpuRes(i64(1<<62), u64(1)), expected: hostCPUs},
+		{name: "huge period does not overflow", defaultCPUs: 1, resources: cpuRes(i64(1), u64(^uint64(0))), expected: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expected, monitorVCPUs(tt.defaultCPUs, tt.resources))
 		})
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/opencontainers/runtime-spec/specs-go"
@@ -144,6 +145,25 @@ func TestWriteMonitorSpec(t *testing.T) {
 
 		got := readMonitorSpecFile(t, monRootfs)
 		assert.False(t, got.ExecArgs.Seccomp)
+	})
+
+	t.Run("sizes the guest vCPUs from the CPU quota", func(t *testing.T) {
+		t.Parallel()
+		if runtime.NumCPU() < 2 {
+			t.Skip("needs at least 2 host CPUs")
+		}
+		monRootfs := t.TempDir()
+		u, rootfsParams := newSpecUnikontainer(t, monRootfs)
+		quota, period := int64(200000), uint64(100000)
+		u.Spec.Linux.Resources = &specs.LinuxResources{
+			CPU: &specs.LinuxCPU{Quota: &quota, Period: &period},
+		}
+
+		err := u.writeMonitorSpec(rootfsParams, monitorResources{})
+		require.NoError(t, err)
+
+		got := readMonitorSpecFile(t, monRootfs)
+		assert.Equal(t, uint(2), got.ExecArgs.VCPUs)
 	})
 
 	t.Run("writes the file owner-only inside the monitor rootfs", func(t *testing.T) {

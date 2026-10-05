@@ -485,6 +485,32 @@ func monitorMemoryBytes(defaultMem uint, resources *specs.LinuxResources) uint64
 	return mem
 }
 
+// monitorVCPUs returns the guest vCPU count, honoring a CPU quota from the OCI
+// spec and falling back to the monitor's configured default. The quota is a
+// time budget per period (Kubernetes' limits.cpu: 2 becomes 200000/100000), so
+// it is rounded up to whole CPUs. It is capped at the host's CPUs, since the
+// spec is untrusted and extra vCPUs could not run concurrently anyway.
+func monitorVCPUs(defaultVCPUs uint, resources *specs.LinuxResources) uint {
+	vcpus := max(defaultVCPUs, 1)
+	if resources == nil || resources.CPU == nil {
+		return vcpus
+	}
+
+	cpu := resources.CPU
+	if cpu.Quota == nil || *cpu.Quota <= 0 || cpu.Period == nil || *cpu.Period == 0 {
+		return vcpus
+	}
+
+	quota := uint64(*cpu.Quota) // nolint:gosec
+	period := *cpu.Period
+	quotaVCPUs := quota / period
+	if quota%period != 0 {
+		quotaVCPUs++
+	}
+
+	return uint(min(quotaVCPUs, uint64(runtime.NumCPU()))) // nolint:gosec
+}
+
 // buildMonitorSpec assembles the base MonitorSpec: everything the monitor needs
 // that can be derived from the OCI spec, the container's annotations and the
 // monitor resources gathered during InitialSetup.
@@ -506,9 +532,6 @@ func (u *Unikontainer) buildMonitorSpec(rootfsParams types.RootfsParams, monRes 
 	}).Debug("Initialization values")
 
 	defaultVCPUs := u.UruncCfg.Monitors[vmmType].DefaultVCPUs
-	if defaultVCPUs < 1 {
-		defaultVCPUs = 1
-	}
 	defaultMemSizeMB := u.UruncCfg.Monitors[vmmType].DefaultMemoryMB
 	socketPath := u.UruncCfg.Monitors[vmmType].SocketPath
 
@@ -518,7 +541,7 @@ func (u *Unikontainer) buildMonitorSpec(rootfsParams types.RootfsParams, monRes 
 		InitrdPath:    initrdPath,
 		Seccomp:       true, // Enable Seccomp by default
 		MemSizeB:      monitorMemoryBytes(defaultMemSizeMB, u.Spec.Linux.Resources),
-		VCPUs:         uint(defaultVCPUs),
+		VCPUs:         monitorVCPUs(defaultVCPUs, u.Spec.Linux.Resources),
 		SocketPath:    socketPath,
 		Environment:   os.Environ(),
 	}
