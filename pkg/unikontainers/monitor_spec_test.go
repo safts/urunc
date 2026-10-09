@@ -134,7 +134,7 @@ func TestWriteMonitorSpec(t *testing.T) {
 		assert.True(t, got.ExecArgs.Seccomp)
 	})
 
-	t.Run("disables seccomp for an unconfined spec", func(t *testing.T) {
+	t.Run("keeps seccomp enabled for an unconfined spec", func(t *testing.T) {
 		t.Parallel()
 		monRootfs := t.TempDir()
 		u, rootfsParams := newSpecUnikontainer(t, monRootfs)
@@ -144,7 +144,7 @@ func TestWriteMonitorSpec(t *testing.T) {
 		require.NoError(t, err)
 
 		got := readMonitorSpecFile(t, monRootfs)
-		assert.False(t, got.ExecArgs.Seccomp)
+		assert.True(t, got.ExecArgs.Seccomp)
 	})
 
 	t.Run("sizes the guest vCPUs from the CPU quota", func(t *testing.T) {

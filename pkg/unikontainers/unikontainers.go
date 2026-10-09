@@ -624,17 +624,11 @@ func (u *Unikontainer) buildMonitorSpec(rootfsParams types.RootfsParams, monRes 
 		ContainerID:   u.State.ID,
 		UnikernelPath: unikernelPath,
 		InitrdPath:    initrdPath,
-		Seccomp:       true, // Enable Seccomp by default
+		Seccomp:       true, // the container's profile is for the guest, never the VMM
 		MemSizeB:      monitorMemoryBytes(defaultMemSizeMB, u.Spec.Linux.Resources),
 		VCPUs:         monitorVCPUs(defaultVCPUs, u.Spec.Linux.Resources),
 		SocketPath:    socketPath,
 		Environment:   os.Environ(),
-	}
-
-	// Check if container is set to unconfined -- disable seccomp
-	if u.Spec.Linux.Seccomp == nil {
-		uniklog.Warn("Seccomp is disabled")
-		vmmArgs.Seccomp = false
 	}
 
 	guest := types.UnikernelParams{

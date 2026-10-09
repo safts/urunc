@@ -183,7 +183,6 @@ func userGroupTest(tool testTool) error {
 }
 
 func seccompTest(tool testTool) error {
-	args := tool.getTestArgs()
 	unikernelPID, err := tool.inspectCAndGet("Pid")
 	if err != nil {
 		return fmt.Errorf("Failed to extract unikernel PID: %v", err)
@@ -215,11 +214,9 @@ func seccompTest(tool testTool) error {
 		}
 	}
 
-	if args.Seccomp && !seccompEnabled {
+	// The monitor keeps its filter even for an unconfined container.
+	if !seccompEnabled {
 		return fmt.Errorf("Seccomp should be enabled (mode 2) on at least one thread, but none found")
-	}
-	if !args.Seccomp && seccompEnabled {
-		return fmt.Errorf("Seccomp should not be enabled, but found mode 2 on a thread")
 	}
 
 	return nil

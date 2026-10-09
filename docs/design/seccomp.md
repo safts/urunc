@@ -60,8 +60,8 @@ repository](https://github.com/nubificus/goscall).
 
 ## Setting a seccomp profile
 
-Due to its design, 'urunc' does not allow the definition of a seccomp profile other
-than the default. However, users can totally disable seccomp by using
-the `--security-opt seccomp=unconfined` command line option. In that scenario,
-'urunc' will not make use of any seccomp filters in all the supported VMMs, except
-of 'Solo5-spt'.
+The container's seccomp profile describes the syscalls of the workload, which
+under 'urunc' runs inside the guest, not those of the VMM. Therefore, the
+container's seccomp profile (including `--security-opt seccomp=unconfined`) does
+not change the monitor's filter: 'urunc' always runs the supported VMMs with
+their own seccomp filters.
