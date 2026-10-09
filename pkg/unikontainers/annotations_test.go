@@ -730,4 +730,40 @@ func TestNewAnnotationsSanity(t *testing.T) {
 		_, err := New(writeBundle(t, map[string]string{}), "test-container", t.TempDir(), defaultUruncConfig())
 		assert.ErrorIs(t, err, ErrNotUnikernel, "Expected ErrNotUnikernel for a plain container")
 	})
+
+	// CRI runtimes copy the pod's annotations into the sandbox (pause)
+	// container too. It must stay on runc, so it does not take the pod's tap.
+	for _, key := range []string{annotCRIContainerType, annotCRIOContainerType} {
+		t.Run("CRI sandbox container falls back to runc ("+key+")", func(t *testing.T) {
+			t.Parallel()
+			annots := validAnnots()
+			annots[key] = criSandboxContainer
+
+			_, err := New(writeBundle(t, annots), "test-container", t.TempDir(), defaultUruncConfig())
+			assert.ErrorIs(t, err, ErrNotUnikernel, "Expected ErrNotUnikernel for a CRI sandbox container")
+		})
+	}
+
+	t.Run("CRI sandbox with boot annotations falls back to runc", func(t *testing.T) {
+		t.Parallel()
+		annots := map[string]string{
+			annotBootKernel:       "/boot/vmlinux",
+			annotBootInitrd:       "/boot/initrd",
+			annotHypervisor:       string(hypervisors.CloudHypervisorVmm),
+			annotCRIContainerType: criSandboxContainer,
+		}
+
+		_, err := New(writeBundle(t, annots), "test-container", t.TempDir(), defaultUruncConfig())
+		assert.ErrorIs(t, err, ErrNotUnikernel, "Expected ErrNotUnikernel for a CRI sandbox container")
+	})
+
+	t.Run("CRI workload container stays a unikernel", func(t *testing.T) {
+		t.Parallel()
+		annots := validAnnots()
+		annots[annotCRIContainerType] = "container"
+
+		u, err := New(writeBundle(t, annots), "test-container", t.TempDir(), defaultUruncConfig())
+		assert.NoError(t, err, "Expected New to succeed for a CRI workload container")
+		assert.NotNil(t, u)
+	})
 }
