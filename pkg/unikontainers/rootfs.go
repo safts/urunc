@@ -507,6 +507,10 @@ func setupConsole(monRootfs string) error {
 	return nil
 }
 
+// monitorLibDirs are the host library dirs mirrored into the monitor rootfs
+// when they exist; a var so tests can point it at temp dirs.
+var monitorLibDirs = []string{"/lib", "/lib64", "/usr/lib"}
+
 // mountsForMonitor returns all the required mounts from the host for the
 // monitor execution: the binary, supporting libraries and data directories.
 // These are the host files that need to be mirrored inside the monitor rootfs.
@@ -536,16 +540,14 @@ func mountsForMonitor(monitorPath string, monitorDataPath string) ([]specs.Mount
 	monitorName := filepath.Base(monitorPath)
 	// TODO: Remove most of these when we switch to static binaries.
 	if monitorName != "firecracker" {
-		mounts = append(mounts, bindMount("/lib", "/lib", true, true))
-
-		// If /lib64 does not exist, just ignore it
-		if _, err := os.Stat("/lib64"); err == nil {
-			mounts = append(mounts, bindMount("/lib64", "/lib64", true, true))
-		} else if !os.IsNotExist(err) {
-			return nil, err
+		// Not every host has all of them (e.g. NixOS has no /usr/lib)
+		for _, dir := range monitorLibDirs {
+			if _, err := os.Stat(dir); err == nil {
+				mounts = append(mounts, bindMount(dir, dir, true, true))
+			} else if !os.IsNotExist(err) {
+				return nil, err
+			}
 		}
-
-		mounts = append(mounts, bindMount("/usr/lib", "/usr/lib", true, true))
 	}
 
 	if len(monitorName) >= 4 && monitorName[:4] == "qemu" {

@@ -16,8 +16,10 @@ package unikontainers
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
@@ -215,4 +217,33 @@ func TestNoRootfsGetMounts(t *testing.T) {
 		assert.Equal(t, containerRootfsMountPath, mounts[0].Destination)
 		assert.NotContains(t, mounts[0].Options, "ro")
 	})
+}
+
+func TestMountsForMonitorSkipsMissingLibDirs(t *testing.T) {
+	tmp := t.TempDir()
+	present := filepath.Join(tmp, "present")
+	missing := filepath.Join(tmp, "missing")
+	require.NoError(t, os.Mkdir(present, 0o755))
+
+	orig := monitorLibDirs
+	monitorLibDirs = []string{present, missing}
+	t.Cleanup(func() { monitorLibDirs = orig })
+
+	destinations := func(mounts []specs.Mount) []string {
+		var d []string
+		for _, m := range mounts {
+			d = append(d, m.Destination)
+		}
+		return d
+	}
+
+	mounts, err := mountsForMonitor("/usr/bin/cloud-hypervisor", "")
+	require.NoError(t, err)
+	assert.Contains(t, destinations(mounts), present)
+	assert.NotContains(t, destinations(mounts), missing)
+
+	mounts, err = mountsForMonitor("/usr/bin/firecracker", "")
+	require.NoError(t, err)
+	assert.NotContains(t, destinations(mounts), present)
+	assert.NotContains(t, destinations(mounts), missing)
 }
