@@ -180,12 +180,25 @@ func (l *Linux) CommandString() (string, error) {
 	if l.ContainerBoot && l.Monitor == "cloud-hypervisor" {
 		bootParams += " URUNIT_POWEROFF=1"
 	}
+	if p := ExitStatusFile(l.ContainerBoot, l.RootFsType); p != "" {
+		bootParams += " URUNIT_EXIT_STATUS=" + p
+	}
 	if l.App != "" {
 		initParams := rdinit + "init=" + l.App + " -- " + l.Command
 		bootParams += " " + initParams
 	}
 
 	return bootParams, nil
+}
+
+// ExitStatusFile returns the guest path where urunit records the application's
+// exit status, or "" when urunc cannot read it back. Only a container boot over
+// a shared filesystem root leaves the file in the container rootfs on the host.
+func ExitStatusFile(containerBoot bool, rootfsType string) string {
+	if containerBoot && (rootfsType == "virtiofs" || rootfsType == "9pfs") {
+		return "/run/urunc/exit-status"
+	}
+	return ""
 }
 
 func (l *Linux) SupportsBlock() bool {

@@ -23,8 +23,11 @@ import (
 	"maps"
 	"net"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -923,7 +926,8 @@ func (u *Unikontainer) Exec(metrics m.Writer) error {
 		return err
 	}
 
-	return execMonitor(metrics, vmm, vmmArgs, execCmd)
+	return execMonitor(metrics, vmm, vmmArgs, execCmd,
+		unikernels.ExitStatusFile(unikernelParams.ContainerBoot, unikernelParams.Rootfs.Type))
 }
 
 // confineToContainerRootfs ensures an image-controlled path stays under the
@@ -987,12 +991,14 @@ func confineBlockSources(blocks []types.BlockDevParams) ([]types.BlockDevParams,
 }
 
 // execMonitor runs the monitor's pre-exec setup and finally execve's the monitor.
-// It does not return on success:
+// It does not return on success. With a statusFile (the guest path where urunit
+// records the application's exit status), it supervises the monitor instead and
+// exits with the guest's status (see superviseMonitor).
 //
 // TODO: The container can still be reported as running if the PreExec step
 // (e.g., BPF/seccomp filter setup) fails after the caller reported success. We
 // should find a way to handle that case as well.
-func execMonitor(metrics m.Writer, vmm types.VMM, execArgs types.ExecArgs, execCmd []string) error {
+func execMonitor(metrics m.Writer, vmm types.VMM, execArgs types.ExecArgs, execCmd []string, statusFile string) error {
 	uniklog.Debug("calling vmm execve")
 	metrics.Capture(m.TS18)
 	// Perform any monitor-specific pre-exec setup (e.g., seccomp filters for HVT).
@@ -1002,9 +1008,91 @@ func execMonitor(metrics m.Writer, vmm types.VMM, execArgs types.ExecArgs, execC
 		return err
 	}
 
+	if statusFile != "" {
+		return superviseMonitor(vmm, execArgs, execCmd, statusFile)
+	}
+
 	// Execute the VMM using the command we built earlier.
 	uniklog.WithField("command", execCmd).Debug("Ready to execve VMM")
 	return syscall.Exec(vmm.Path(), execCmd, execArgs.Environment) //nolint: gosec
+}
+
+// superviseMonitor runs the monitor as a child instead of exec'ing it, so the
+// container's exit code can be the guest application's rather than the
+// monitor's, which exits 0 whenever the guest powers off. It forwards signals
+// to the monitor and does not return on success. It prints nothing on success,
+// since stdout and stderr are the container's log.
+func superviseMonitor(vmm types.VMM, execArgs types.ExecArgs, execCmd []string, statusFile string) error {
+	// Resolve after the pivot, so an image symlink cannot point outside the
+	// container rootfs.
+	hostStatus, err := confineToContainerRootfs(statusFile)
+	if err != nil {
+		return err
+	}
+
+	// Pdeathsig is tied to the thread that started the child.
+	runtime.LockOSThread()
+	sigs := make(chan os.Signal, 16)
+	signal.Notify(sigs)
+	cmd := &exec.Cmd{
+		Path:        vmm.Path(),
+		Args:        execCmd,
+		Env:         execArgs.Environment,
+		Stdin:       os.Stdin,
+		Stdout:      os.Stdout,
+		Stderr:      os.Stderr,
+		SysProcAttr: &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL},
+	}
+	uniklog.WithField("command", execCmd).Debug("Ready to start supervised VMM")
+	if err = cmd.Start(); err != nil {
+		return err
+	}
+	go func() {
+		for sig := range sigs {
+			if sig != syscall.SIGCHLD && sig != syscall.SIGURG {
+				_ = cmd.Process.Signal(sig)
+			}
+		}
+	}()
+	_ = cmd.Wait()
+	ws, _ := cmd.ProcessState.Sys().(syscall.WaitStatus)
+
+	// The guest wrote this file, so read only a bounded record.
+	var record []byte
+	if f, err := os.Open(hostStatus); err == nil {
+		record, _ = io.ReadAll(io.LimitReader(f, 32))
+		f.Close()
+	}
+	os.Exit(guestExitCode(ws, record))
+	return nil
+}
+
+// guestExitCode maps the monitor's wait status and urunit's exit record
+// ("EXIT:<n>" or "SIGNAL:<n>", optionally newline-terminated) to the
+// container's exit code. A monitor that failed or was killed wins; a missing
+// or malformed record leaves the monitor's own status.
+func guestExitCode(vmm syscall.WaitStatus, record []byte) int {
+	if vmm.Signaled() {
+		return 128 + int(vmm.Signal())
+	}
+	if vmm.ExitStatus() != 0 {
+		return vmm.ExitStatus()
+	}
+	key, val, ok := strings.Cut(strings.TrimSuffix(string(record), "\n"), ":")
+	if !ok {
+		return 0
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return 0
+	}
+	switch {
+	case key == "EXIT" && n >= 0 && n <= 255:
+		return n
+	case key == "SIGNAL" && n >= 1 && n <= 127:
+		return 128 + n
+	}
+	return 0
 }
 
 // makeMonitorSockDir creates the directory the monitor binds its own sockets
