@@ -648,6 +648,7 @@ func (u *Unikontainer) buildMonitorSpec(rootfsParams types.RootfsParams, monRes 
 		BlkDevName: u.State.Annotations[annotBlkDev],
 		Rootfs:     rootfsParams,
 		Block:      monRes.BlockArgs,
+		Tmpfs:      guestTmpfsMounts(u.Spec.Mounts),
 		// Mirror urunc's own log verbosity onto the guest: only a debug (or more
 		// verbose) level lets the guest log fully; otherwise it boots quietly.
 		Verbose: verboseGuestLogs(),

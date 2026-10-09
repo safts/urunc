@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/containerd/containerd/mount"
 	securejoin "github.com/cyphar/filepath-securejoin"
@@ -33,6 +34,8 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/opencontainers/runtime-spec/specs-go"
+
+	"github.com/urunc-dev/urunc/pkg/unikontainers/types"
 )
 
 var ErrCopyDir = errors.New("can not copy a directory")
@@ -531,4 +534,24 @@ func splitMountOptions(options []string, isBind bool) ([]string, []int, uintptr)
 	}
 
 	return containerdOpts, propagation, vfsFlags
+}
+
+// guestTmpfsMounts returns the spec's tmpfs mounts for the guest to make, in
+// spec order. /dev is skipped: a VM guest gets it from its own kernel and a
+// tmpfs there would hide every device. Propagation options mean nothing inside
+// the guest and are dropped.
+func guestTmpfsMounts(mounts []specs.Mount) []types.TmpfsParams {
+	var tmpfs []types.TmpfsParams
+	for _, m := range mounts {
+		if m.Type != "tmpfs" || filepath.Clean(m.Destination) == "/dev" {
+			continue
+		}
+		data, _, flags := splitMountOptions(m.Options, true)
+		tmpfs = append(tmpfs, types.TmpfsParams{
+			Destination: m.Destination,
+			Flags:       flags,
+			Data:        strings.Join(data, ","),
+		})
+	}
+	return tmpfs
 }

@@ -176,3 +176,19 @@ func TestLinuxCommandStringExitStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestLinuxContainerBootUrunitConfigTmpfs(t *testing.T) {
+	t.Parallel()
+
+	l := &Linux{
+		Env:           []string{"PATH=/usr/bin", "FOO=bar"},
+		ProcConfig:    types.ProcessConfig{UID: 1000, GID: 1000, WorkDir: "/work"},
+		ContainerBoot: true,
+		Tmpfs:         []types.TmpfsParams{{Destination: "/scratch", Flags: 14, Data: "size=64m,mode=1770"}},
+	}
+	assert.Equal(t, "URUNIT1\x00UES\x00PATH=/usr/bin\x00FOO=bar\x00UEE\x00UCS\x00UID:1000\x00GID:1000\x00WD:/work\x00UCE\x00UBS\x00UBE\x00UTS\x00MP:/scratch\x00FL:14\x00DAT:size=64m,mode=1770\x00UTE\x00", l.buildUrunitConfig())
+
+	// A urunit inside the user's image may predate the tmpfs section.
+	l.ContainerBoot = false
+	assert.NotContains(t, l.buildUrunitConfig(), "UTS")
+}

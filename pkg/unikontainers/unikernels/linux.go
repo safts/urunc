@@ -43,6 +43,8 @@ const (
 	lpcEndMarker      string = "UCE" // Linux process config end marker
 	blkStartMarker    string = "UBS" // Block-based mounts start marker
 	blkEndMarker      string = "UBE" // Block-based mounts end marker
+	tmpfsStartMarker  string = "UTS" // tmpfs mounts start marker
+	tmpfsEndMarker    string = "UTE" // tmpfs mounts end marker
 	// urunitConfMagic starts a urunit configuration of NUL-terminated records
 	urunitConfMagic string = "URUNIT1"
 )
@@ -54,6 +56,7 @@ type Linux struct {
 	Env        []string
 	Net        LinuxNet
 	Blk        []types.BlockDevParams
+	Tmpfs      []types.TmpfsParams
 	RootFsType string
 	// RootFsFsType is the filesystem of a block rootfs (e.g. ext2). A generic
 	// container boot uses it to spell rootfstype= on the kernel command line so
@@ -324,6 +327,7 @@ func (l *Linux) Init(data types.UnikernelParams) error {
 
 	l.configureNetwork(data.Net)
 	l.Blk = data.Block
+	l.Tmpfs = data.Tmpfs
 	l.RootFsType = data.Rootfs.Type
 	l.RootFsFsType = data.Rootfs.FsType
 	l.Verbose = data.Verbose
@@ -460,6 +464,11 @@ func (l *Linux) buildUrunitConfig() string {
 	c.record("WD:", l.ProcConfig.WorkDir)
 	c.record(lpcEndMarker)
 	c.blocks(l.Blk, l.Monitor)
+	// Only the boot initrd's urunit, built with this urunc, knows the tmpfs
+	// section; a urunit inside the image may predate it.
+	if l.ContainerBoot {
+		c.tmpfs(l.Tmpfs)
+	}
 	return c.String()
 }
 
@@ -509,6 +518,20 @@ func (c *urunitConfig) blocks(blk []types.BlockDevParams, monitor string) {
 		c.record("MP:", b.MountPoint)
 	}
 	c.record(blkEndMarker)
+}
+
+// tmpfs writes the tmpfs mounts, or nothing when there are none.
+func (c *urunitConfig) tmpfs(t []types.TmpfsParams) {
+	if len(t) == 0 {
+		return
+	}
+	c.record(tmpfsStartMarker)
+	for _, m := range t {
+		c.record("MP:", m.Destination)
+		c.record("FL:", strconv.FormatUint(uint64(m.Flags), 10))
+		c.record("DAT:", m.Data)
+	}
+	c.record(tmpfsEndMarker)
 }
 
 // padTo pads the configuration with NUL characters, which urunit skips, to a
