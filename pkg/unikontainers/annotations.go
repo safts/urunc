@@ -59,9 +59,12 @@ const (
 
 // Annotations that other runtimes set and urunc only reads.
 const (
-	annotCRICntrName  = "io.kubernetes.cri.container-name"
-	criQueueProxyCntr = "queue-proxy"
-	criUserCntr       = "user-container"
+	annotCRICntrName       = "io.kubernetes.cri.container-name"
+	annotCRIContainerType  = "io.kubernetes.cri.container-type"  // containerd
+	annotCRIOContainerType = "io.kubernetes.cri-o.ContainerType" // CRI-O
+	criSandboxContainer    = "sandbox"
+	criQueueProxyCntr      = "queue-proxy"
+	criUserCntr            = "user-container"
 )
 
 // allowedPathRe constrains the characters of the filepaths that we receive
