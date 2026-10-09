@@ -15,6 +15,7 @@
 package unikernels
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -131,4 +132,47 @@ func TestLinuxContainerBootInitRequiresInitrd(t *testing.T) {
 	})
 	require.Error(t, err, "a container boot without the boot initrd path cannot build the guest initrd")
 	assert.ErrorContains(t, err, "boot initrd")
+}
+
+func TestExitStatusFile(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "/run/urunc/exit-status", ExitStatusFile(true, "virtiofs"))
+	assert.Equal(t, "/run/urunc/exit-status", ExitStatusFile(true, "9pfs"))
+	for _, rootfs := range []string{"block", "initrd", ""} {
+		assert.Empty(t, ExitStatusFile(true, rootfs), rootfs)
+	}
+	assert.Empty(t, ExitStatusFile(false, "virtiofs"))
+}
+
+func TestLinuxCommandStringExitStatus(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		rootfs        string
+		containerBoot bool
+		want          bool
+	}{
+		{"virtiofs", true, true},
+		{"9pfs", true, true},
+		{"block", true, false},
+		{"virtiofs", false, false},
+	} {
+		l := &Linux{
+			App:           containerBootInit,
+			Command:       "/bin/true",
+			Monitor:       "qemu",
+			RootFsType:    tc.rootfs,
+			InitrdConf:    true,
+			ContainerBoot: tc.containerBoot,
+		}
+		cmdline, err := l.CommandString()
+		require.NoError(t, err)
+		kernelPart, _, _ := strings.Cut(cmdline, " -- ")
+		if tc.want {
+			assert.Contains(t, kernelPart, "URUNIT_EXIT_STATUS=/run/urunc/exit-status", tc)
+		} else {
+			assert.NotContains(t, cmdline, "URUNIT_EXIT_STATUS", tc)
+		}
+	}
 }

@@ -170,5 +170,6 @@ func runMonitor(metrics m.Writer, ms monitorSpec) error {
 		return err
 	}
 
-	return execMonitor(metrics, vmm, ms.ExecArgs, execCmd)
+	return execMonitor(metrics, vmm, ms.ExecArgs, execCmd,
+		unikernels.ExitStatusFile(ms.GuestParams.ContainerBoot, ms.GuestParams.Rootfs.Type))
 }
