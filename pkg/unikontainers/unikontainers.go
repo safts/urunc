@@ -86,6 +86,14 @@ func New(bundlePath string, containerID string, rootDir string, cfg *UruncConfig
 		return nil, fmt.Errorf("invalid OCI spec: linux section is required")
 	}
 
+	// The CRI sandbox (pause) container only holds the pod's namespaces. It
+	// carries the pod's annotations too, but it must never take the pod's
+	// network as a VM: hand it to runc.
+	if spec.Annotations[annotCRIContainerType] == criSandboxContainer ||
+		spec.Annotations[annotCRIOContainerType] == criSandboxContainer {
+		return nil, ErrNotUnikernel
+	}
+
 	containerName := spec.Annotations[annotCRICntrName]
 	if containerName == criQueueProxyCntr {
 		uniklog.Warn("This is a queue-proxy container. Adding IP env.")
