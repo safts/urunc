@@ -56,6 +56,13 @@ type NetDevParams struct {
 	DNSServer string // The nameserver of the container, empty if there is none
 }
 
+// TmpfsParams is a tmpfs mount for the guest to make, as mount(2) arguments.
+type TmpfsParams struct {
+	Destination string
+	Flags       uintptr
+	Data        string
+}
+
 type BlockDevParams struct {
 	Source         string
 	MountPoint     string
@@ -103,6 +110,7 @@ type UnikernelParams struct {
 	BlkDevName string   // The name of the guest block device declared at build time
 	Net        NetDevParams
 	Block      []BlockDevParams
+	Tmpfs      []TmpfsParams // tmpfs mounts the guest makes itself
 	Rootfs     RootfsParams  // Information about rootfs
 	ProcConf   ProcessConfig // Information for the process execution inside the guest
 	// ContainerBoot marks a generic container boot: an unmodified OCI image
