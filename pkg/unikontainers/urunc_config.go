@@ -15,12 +15,15 @@
 package unikontainers
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/urunc-dev/urunc/pkg/unikontainers/hypervisors"
 	"github.com/urunc-dev/urunc/pkg/unikontainers/types"
+	"github.com/urunc-dev/urunc/pkg/unikontainers/unikernels"
 )
 
 const UruncConfigPath = "/etc/urunc/config.toml"
@@ -64,10 +67,68 @@ const (
 	vaccelKey       = "urunc_config.runtime.vAccel"
 )
 
+// UruncContainers holds the options for containers that name no unikernel.
+// They are only read at create, so they are not saved in state.json.
+type UruncContainers struct {
+	// RequireVM refuses a workload container that urunc would otherwise hand
+	// to runc. The CRI sandbox (pause) container still goes to runc.
+	RequireVM bool `toml:"require_vm"`
+	// BootKernel, BootInitrd and BootHypervisor give a generic container boot
+	// to a container that names no unikernel itself.
+	BootKernel     string `toml:"boot_kernel"`
+	BootInitrd     string `toml:"boot_initrd"`
+	BootHypervisor string `toml:"boot_hypervisor"`
+	// PinBoot makes the configured boot replace the pod's boot annotations.
+	PinBoot bool `toml:"pin_boot"`
+}
+
+var errRequireVM = errors.New("the container would run without a VM, refused by [containers] require_vm in the urunc configuration")
+
+// defaultBoot returns the configured generic container boot for a container
+// that names no unikernel.
+func (c UruncContainers) defaultBoot() (*UnikernelConfig, error) {
+	if c.BootKernel == "" && c.BootInitrd == "" {
+		if c.RequireVM {
+			return nil, errRequireVM
+		}
+		return nil, ErrNotUnikernel
+	}
+	return &UnikernelConfig{
+		UnikernelType: unikernels.LinuxUnikernel,
+		Hypervisor:    c.bootHypervisor(),
+		MountRootfs:   "true",
+		BootKernel:    c.BootKernel,
+		BootInitrd:    c.BootInitrd,
+	}, nil
+}
+
+// pinBoot replaces the boot of a generic container boot with the configured
+// one when pin_boot is set.
+func (c UruncContainers) pinBoot(conf *UnikernelConfig) error {
+	if !c.PinBoot || !conf.hasContainerBoot() {
+		return nil
+	}
+	if c.BootKernel == "" || c.BootInitrd == "" {
+		return errors.New("[containers] pin_boot requires boot_kernel and boot_initrd in the urunc configuration")
+	}
+	conf.BootKernel = c.BootKernel
+	conf.BootInitrd = c.BootInitrd
+	conf.Hypervisor = c.bootHypervisor()
+	return nil
+}
+
+func (c UruncContainers) bootHypervisor() string {
+	if c.BootHypervisor == "" {
+		return string(hypervisors.QemuVmm)
+	}
+	return c.BootHypervisor
+}
+
 type UruncConfig struct {
 	Log        UruncLog                        `toml:"log"`
 	Timestamps UruncTimestamps                 `toml:"timestamps"`
 	Runtime    UruncRuntime                    `toml:"runtime"`
+	Containers UruncContainers                 `toml:"containers"`
 	Monitors   map[string]types.MonitorConfig  `toml:"monitors"`
 	ExtraBins  map[string]types.ExtraBinConfig `toml:"extra_binaries"`
 }
