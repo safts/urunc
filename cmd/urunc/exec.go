@@ -152,11 +152,12 @@ func runExecSession(cmd *cli.Command, ready *execReady) error {
 	}
 
 	req := agentproto.OpenRequest{
-		Argv: proc.Args,
-		Env:  proc.Env,
-		Cwd:  proc.Cwd,
-		User: userSpec(proc.User),
-		TTY:  proc.Terminal,
+		Argv:   proc.Args,
+		Env:    proc.Env,
+		Cwd:    proc.Cwd,
+		User:   userSpec(proc.User),
+		Groups: proc.User.AdditionalGids,
+		TTY:    proc.Terminal,
 	}
 	if proc.Terminal {
 		return runTTYSession(cmd, conn, req, ready)

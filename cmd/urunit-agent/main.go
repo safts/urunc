@@ -338,6 +338,9 @@ func (c *connState) open(stream uint32, req agentproto.OpenRequest) error {
 	if err != nil {
 		return err
 	}
+	if gu != nil && len(req.Groups) > 0 {
+		gu.groups = req.Groups
+	}
 
 	log.Printf("open stream %d: argv=%v tty=%v user=%q", stream, req.Argv, req.TTY, req.User)
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)

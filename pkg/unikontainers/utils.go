@@ -261,8 +261,8 @@ func vhostSocketPath(argv []string) string {
 }
 
 // waitAndChmodSocket waits for a unix socket to be created, then sets its mode.
-// virtiofsd is spawned while urunc is still root (so it can translate ids and
-// write the shared rootfs) and creates its vhost-user socket root-owned. The
+// virtiofsd is spawned while urunc is still root (so it can write the shared
+// rootfs as the guest caller's uid/gid) and creates its vhost-user socket root-owned. The
 // monitor then drops to the container user and would not be able to connect, so
 // while still root we wait for the socket and relax its mode. Waiting also
 // absorbs virtiofsd's startup race, where the socket does not yet exist when
