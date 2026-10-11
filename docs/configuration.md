@@ -50,7 +50,7 @@ default_vcpus = 1
 
 [extra_binaries.virtiofsd]
 path = "/usr/libexec/virtiofsd"
-options = "--sandbox none"
+options = "--sandbox chroot"
 ```
 
 ## Configuration Sections
@@ -269,16 +269,16 @@ Each extra binary subsection supports the following options:
 Specifically for `virtiofsd` the default values are the following:
 
 - `path`: `/usr/libexec/virtiofsd`
-- `options`: `--cache always --sandbox none`
+- `options`: `--cache always --sandbox chroot`
 
-> **NOTE**: Currently, in the case of libcontainer the option `--sandbox` should be set to none, due to missing capabilities inside the monitor's execution environment.
+> **NOTE**: virtiofsd's own default sandbox, `namespace`, needs `CAP_SYS_ADMIN`, which the monitor does not have under libcontainer. `chroot` needs only root and `CAP_SYS_CHROOT` (in the default capability set of containerd, CRI-O and Docker) and confines virtiofsd's file server to the shared directory. It limits path-traversal bugs, not arbitrary code execution inside virtiofsd. Set `--sandbox none` only for a container that drops `CAP_SYS_CHROOT`.
 
 **Example:**
 
 ```toml
 [extra_binaries.virtiofsd]
 path = "/usr/local/bin/virtiofsd"
-options = "--sandbox none --cache always"
+options = "--sandbox chroot --cache always"
 ```
 
 ## Creating the Configuration File
