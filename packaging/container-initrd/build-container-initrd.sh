@@ -45,8 +45,9 @@ case "${TARGET_ARCH:-$(uname -m)}" in
   x86_64|amd64)  busybox_arch=x86_64;  agent_goarch=amd64 ;;
   *) echo "ERROR: unsupported TARGET_ARCH=${TARGET_ARCH:-$(uname -m)}" >&2; exit 1 ;;
 esac
-# busybox.net publishes 1.35.0 static binaries for x86_64 only.
-if [ "$busybox_arch" = x86_64 ]; then
+# busybox.net publishes 1.35.0 static binaries for x86_64 only. The pinned
+# checksum applies to that download, not to a caller-supplied BUSYBOX.
+if [ "$busybox_arch" = x86_64 ] && [ -z "${BUSYBOX:-}" ]; then
   BUSYBOX_URL="${BUSYBOX_URL:-https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox}"
   BUSYBOX_SHA256="${BUSYBOX_SHA256-6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba311348}"
 fi
