@@ -124,7 +124,7 @@ func TestLinuxUrunitConfigAdditionalGids(t *testing.T) {
 	l := &Linux{
 		ProcConfig: types.ProcessConfig{UID: 1000, GID: 1000, AdditionalGids: []uint32{1000, 2000}, WorkDir: "/work"},
 	}
-	assert.Equal(t, "URUNIT1\x00UCS\x00UID:1000\x00GID:1000\x00AGID:1000\x00AGID:2000\x00WD:/work\x00UCE\x00UBS\x00UBE\x00", l.buildUrunitConfig())
+	assert.Equal(t, "URUNIT1\x00UES\x00UEE\x00UCS\x00UID:1000\x00GID:1000\x00AGID:1000\x00AGID:2000\x00WD:/work\x00UCE\x00UBS\x00UBE\x00", l.buildUrunitConfig())
 }
 
 func TestLinuxUrunitConfAsInitrd(t *testing.T) {
