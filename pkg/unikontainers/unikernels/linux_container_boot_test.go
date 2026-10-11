@@ -15,6 +15,7 @@
 package unikernels
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -28,9 +29,11 @@ func TestLinuxContainerBootCmdLine(t *testing.T) {
 	t.Parallel()
 
 	l := &Linux{}
-	require.NoError(t, l.parseContainerBootCmdLine([]string{"/bin/sh", "-c", "printf container-boot-ok"}))
+	argv := []string{"/bin/sh", "-c", "echo 'a  b'\nx", "  padded  ", ""}
+	require.NoError(t, l.parseContainerBootCmdLine(argv))
 	assert.Equal(t, containerBootInit, l.App, "the boot initrd's /init is the guest init")
-	assert.Equal(t, "/bin/sh -c 'printf container-boot-ok'", l.Command, "the whole container command is handed to /init")
+	assert.Equal(t, argv, l.Argv, "the container command is kept verbatim for the urunit configuration")
+	assert.Empty(t, l.Command, "the container command is not put on the kernel command line")
 
 	err := l.parseContainerBootCmdLine(nil)
 	assert.Error(t, err, "a container boot needs a command")
@@ -41,7 +44,7 @@ func TestLinuxContainerBootCommandString(t *testing.T) {
 
 	l := &Linux{
 		App:           containerBootInit,
-		Command:       "/bin/sh -c 'printf container-boot-ok'",
+		Argv:          []string{"/bin/sh", "-c", "printf container-boot-ok"},
 		Monitor:       "qemu",
 		Env:           []string{"TOKEN=not-on-the-kernel-command-line"},
 		RootFsType:    "virtiofs",
@@ -54,7 +57,11 @@ func TestLinuxContainerBootCommandString(t *testing.T) {
 
 	// The root parameters stay: /init mounts the share they describe itself.
 	assert.Contains(t, cmdline, "root=fs0 rw rootfstype=virtiofs")
-	assert.Contains(t, cmdline, "rdinit=/init -- /bin/sh -c 'printf container-boot-ok'")
+	assert.Contains(t, cmdline, "rdinit=/init")
+	// The command travels in the urunit configuration, not on the kernel
+	// command line, which would cap its length and number of arguments.
+	assert.NotContains(t, cmdline, "printf")
+	assert.NotContains(t, cmdline, "/bin/sh")
 	assert.Contains(t, cmdline, "console=hvc0")
 	// The environment travels in the urunit configuration inside the initrd,
 	// which /init points urunit at, so neither it nor a config path is here.
@@ -191,4 +198,33 @@ func TestLinuxContainerBootUrunitConfigTmpfs(t *testing.T) {
 	// A urunit inside the user's image may predate the tmpfs section.
 	l.ContainerBoot = false
 	assert.NotContains(t, l.buildUrunitConfig(), "UTS")
+}
+
+func TestLinuxContainerBootUrunitConfigArgv(t *testing.T) {
+	t.Parallel()
+
+	l := &Linux{
+		ProcConfig:    types.ProcessConfig{WorkDir: "/work"},
+		ContainerBoot: true,
+		Argv:          []string{"/bin/sh", "-c", "echo 'a  b'\nx", ""},
+	}
+	assert.Contains(t, l.buildUrunitConfig(), "WD:/work\x00ARC:4\x00ARV:/bin/sh\x00ARV:-c\x00ARV:echo 'a  b'\nx\x00ARV:\x00UCE\x00")
+
+	// No length or count limit: a 16 KiB argument and 500 arguments.
+	long := strings.Repeat("x", 16*1024)
+	l.Argv = []string{"/bin/sh", "-c", long}
+	assert.Contains(t, l.buildUrunitConfig(), "ARC:3\x00ARV:/bin/sh\x00ARV:-c\x00ARV:"+long+"\x00UCE\x00")
+
+	l.Argv = make([]string, 500)
+	for i := range l.Argv {
+		l.Argv[i] = "arg" + strconv.Itoa(i)
+	}
+	conf := l.buildUrunitConfig()
+	assert.Contains(t, conf, "ARC:500\x00ARV:arg0\x00")
+	assert.Contains(t, conf, "\x00ARV:"+strings.Join(l.Argv, "\x00ARV:")+"\x00UCE\x00")
+
+	// A urunit inside the user's image may predate the command in the
+	// configuration, so only a container boot writes it.
+	l.ContainerBoot = false
+	assert.NotContains(t, l.buildUrunitConfig(), "ARC:")
 }

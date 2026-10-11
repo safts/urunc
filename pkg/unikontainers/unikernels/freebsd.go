@@ -272,10 +272,7 @@ func (f *FreeBSD) buildUrunitConfig() string {
 	c.record("UID:", strconv.FormatUint(uint64(f.ProcConfig.UID), 10))
 	c.record("GID:", strconv.FormatUint(uint64(f.ProcConfig.GID), 10))
 	c.record("WD:", f.ProcConfig.WorkDir)
-	c.record("ARC:", strconv.Itoa(len(f.Command)))
-	for _, arg := range f.Command {
-		c.record("ARV:", arg)
-	}
+	c.args(f.Command)
 	c.record(lpcEndMarker)
 	c.blocks(f.Block, f.Monitor)
 	c.record(netStartMarker)

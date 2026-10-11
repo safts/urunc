@@ -10,15 +10,18 @@
 #   1. mount the shared rootfs at /newroot;
 #   2. move urunit, urunit-agent and the urunit configuration into it, under
 #      /run/urunc (switch_root deletes the initramfs, so nothing may stay here);
-#   3. switch_root into urunit with the container command, pointing it at its
-#      configuration with URUNIT_CONFIG.
+#   3. switch_root into urunit, pointing it at its configuration with
+#      URUNIT_CONFIG.
 #
 # The configuration (/urunit.conf) is the only per-container file urunc appends
-# to this initrd: the container's environment, user and working directory.
+# to this initrd: the container's environment, user, working directory and
+# command. The command is there rather than on the kernel command line, which
+# limits its length and number of arguments; urunit looks a bare command up
+# with the container's PATH.
 # urunit, as PID 1, starts the agent it finds at /run/urunc/urunit-agent
 # before the container command and reaps it, which is why this script only
 # stages the agent there and never starts it.
-# Everything else (the command line, the network files bind-mounted over
+# Everything else (the network files bind-mounted over
 # /etc/resolv.conf, /etc/hosts and /etc/hostname, the volumes) already reaches
 # the guest through the kernel command line and the shared rootfs itself.
 #
@@ -41,7 +44,7 @@ $BB mount -t proc proc /proc || fail "could not mount /proc"
 $BB mount -t devtmpfs dev /dev || fail "could not mount /dev"
 
 # The root the kernel was told about: root=<tag> rootfstype=<fs> [rootflags=<opts>].
-# Parameters after "--" belong to the container command and are not looked at.
+# Parameters after "--" belong to init and are not looked at.
 root=""
 fstype=""
 flags=""
@@ -87,20 +90,6 @@ $BB mount --move /dev /newroot/dev || fail "could not move /dev into the new roo
 $BB mkdir -p /newroot/dev/pts
 $BB mount -t devpts -o gid=5,mode=0620,ptmxmode=0666 devpts /newroot/dev/pts || fail "could not mount devpts"
 
-# switch_root execs urunit directly, so a bare command such as "bash" is
-# resolved against the new root's standard directories first.
-cmd="$1"
-shift 2>/dev/null || true
-case "$cmd" in
-  /*) ;;
-  *)
-    for d in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do
-      if [ -x "/newroot$d/$cmd" ]; then
-        cmd="$d/$cmd"
-        break
-      fi
-    done
-    ;;
-esac
-
-exec $BB switch_root /newroot /run/urunc/urunit "$cmd" "$@"
+# The container command is in the configuration, verbatim; urunit looks a bare
+# command up with the container's PATH, after changing to its working directory.
+exec $BB switch_root /newroot /run/urunc/urunit

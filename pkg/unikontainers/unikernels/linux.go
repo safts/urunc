@@ -50,8 +50,11 @@ const (
 )
 
 type Linux struct {
-	App        string
-	Command    string
+	App     string
+	Command string
+	// Argv is the container command of a generic container boot, verbatim.
+	// It reaches urunit in its configuration, not on the kernel command line.
+	Argv       []string
 	Monitor    string
 	Env        []string
 	Net        LinuxNet
@@ -371,15 +374,17 @@ func (l *Linux) parseCmdLine(cmdLine []string) error {
 
 // parseContainerBootCmdLine sets up the command line of a generic container
 // boot: the boot initrd's /init is the guest init and the whole container
-// command (entrypoint and arguments) is passed to it, to be handed over to
-// urunit after the switch_root.
+// command (entrypoint and arguments) goes verbatim into the urunit
+// configuration, since the kernel command line caps its length and number of
+// arguments and can not carry every argument intact.
 func (l *Linux) parseContainerBootCmdLine(cmdLine []string) error {
 	if len(cmdLine) == 0 {
 		return fmt.Errorf("no command was specified for the container")
 	}
 
 	l.App = containerBootInit
-	l.Command = strings.Join(normalizeArgs(cmdLine), " ")
+	l.Argv = cmdLine
+	l.Command = ""
 
 	return nil
 }
@@ -462,10 +467,14 @@ func (l *Linux) buildUrunitConfig() string {
 	c.record("UID:", strconv.FormatUint(uint64(l.ProcConfig.UID), 10))
 	c.record("GID:", strconv.FormatUint(uint64(l.ProcConfig.GID), 10))
 	c.record("WD:", l.ProcConfig.WorkDir)
+	// Only the boot initrd's urunit, built with this urunc, is known to take
+	// the command from the configuration and the tmpfs section; a urunit
+	// inside the image may predate them.
+	if l.ContainerBoot && len(l.Argv) > 0 {
+		c.args(l.Argv)
+	}
 	c.record(lpcEndMarker)
 	c.blocks(l.Blk, l.Monitor)
-	// Only the boot initrd's urunit, built with this urunc, knows the tmpfs
-	// section; a urunit inside the image may predate it.
 	if l.ContainerBoot {
 		c.tmpfs(l.Tmpfs)
 	}
@@ -501,6 +510,15 @@ func (c *urunitConfig) envs(env []string) {
 		c.record(e)
 	}
 	c.record(envEndMarker)
+}
+
+// args writes the application command: its argument count, then each
+// argument verbatim.
+func (c *urunitConfig) args(argv []string) {
+	c.record("ARC:", strconv.Itoa(len(argv)))
+	for _, arg := range argv {
+		c.record("ARV:", arg)
+	}
 }
 
 // blocks writes the block-based mounts, except the rootfs.
