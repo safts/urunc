@@ -94,6 +94,41 @@ container's `state.json`, so `start`, `kill` and `delete` keep using the mode
 the container was created with even if the configuration file changes in
 between.
 
+### Containers
+
+The `[containers]` section controls what `urunc` does with a container that
+names no unikernel (no urunc annotations and no valid `urunc.json` in the
+image). By default such a container is handed to runc and runs on the host
+kernel. Every option is off by default.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `require_vm` | boolean | `false` | Refuse a container that would be handed to runc, including a `queue-proxy` container. The CRI sandbox (pause) container still runs under runc |
+| `boot_kernel` | string | `""` | Host kernel for a generic container boot of a container that names no unikernel |
+| `boot_initrd` | string | `""` | Host initrd for that boot. Must be set together with `boot_kernel` |
+| `boot_hypervisor` | string | `"qemu"` | Monitor for the configured boot (and for `pin_boot`): `qemu`, `firecracker` or `cloud-hypervisor` |
+| `pin_boot` | boolean | `false` | Ignore the `com.urunc.unikernel.bootKernel`, `bootInitrd` and `hypervisor` annotations of a generic container boot and use the configured values. Requires `boot_kernel` and `boot_initrd` |
+
+**Notes**:
+- A container's own urunc annotations or `urunc.json` take precedence over
+  `boot_kernel` / `boot_initrd`, unless `pin_boot` is set.
+- The configured boot is validated like the boot annotations: clean absolute
+  host paths, a Linux guest, and one of the monitors above.
+- `pin_boot` does not affect unikernel containers: their kernel comes from the
+  image, not from the host.
+- These options are read only when the container is created.
+
+**Example:**
+
+```toml
+[containers]
+require_vm = true
+boot_kernel = "/opt/urunc/vmlinux"
+boot_initrd = "/opt/urunc/initrd"
+boot_hypervisor = "cloud-hypervisor"
+pin_boot = true
+```
+
 ### Log Configuration
 
 The `[log]` section controls logging behavior for `urunc`:

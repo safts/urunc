@@ -99,6 +99,9 @@ func New(bundlePath string, containerID string, rootDir string, cfg *UruncConfig
 
 	containerName := spec.Annotations[annotCRICntrName]
 	if containerName == criQueueProxyCntr {
+		if cfg.Containers.RequireVM {
+			return nil, errRequireVM
+		}
 		uniklog.Warn("This is a queue-proxy container. Adding IP env.")
 		configFile := filepath.Join(bundlePath, configFilename)
 		err = handleQueueProxy(*spec, configFile)
@@ -109,6 +112,13 @@ func New(bundlePath string, containerID string, rootDir string, cfg *UruncConfig
 	}
 
 	config, err := GetUnikernelConfig(bundlePath, spec)
+	if errors.Is(err, ErrNotUnikernel) {
+		config, err = cfg.Containers.defaultBoot()
+	}
+	if err != nil {
+		return nil, err
+	}
+	err = cfg.Containers.pinBoot(config)
 	if err != nil {
 		return nil, err
 	}
