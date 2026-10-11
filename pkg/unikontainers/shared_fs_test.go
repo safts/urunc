@@ -18,7 +18,43 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/urunc-dev/urunc/pkg/unikontainers/types"
 )
+
+func TestVirtiofsdPreStartCmd(t *testing.T) {
+	t.Parallel()
+
+	count := func(argv []string, s string) int {
+		n := 0
+		for _, a := range argv {
+			if a == s {
+				n++
+			}
+		}
+		return n
+	}
+
+	t.Run("default options get --inode-file-handles=never once", func(t *testing.T) {
+		t.Parallel()
+		s := sharedfsRootfs{sfsType: "virtiofs", vfsdConfig: types.ExtraBinConfig{
+			Path: "/usr/libexec/virtiofsd", Options: "--cache always --sandbox chroot"}}
+		assert.Equal(t, 1, count(s.preStartCmd(), "--inode-file-handles=never"))
+	})
+
+	t.Run("an explicit --inode-file-handles is kept", func(t *testing.T) {
+		t.Parallel()
+		s := sharedfsRootfs{sfsType: "virtiofs", vfsdConfig: types.ExtraBinConfig{
+			Path: "/usr/libexec/virtiofsd", Options: "--inode-file-handles=prefer"}}
+		argv := s.preStartCmd()
+		assert.Equal(t, 1, count(argv, "--inode-file-handles=prefer"))
+		assert.Zero(t, count(argv, "--inode-file-handles=never"))
+	})
+
+	t.Run("9pfs has no pre-start command", func(t *testing.T) {
+		t.Parallel()
+		assert.Nil(t, sharedfsRootfs{sfsType: "9pfs"}.preStartCmd())
+	})
+}
 
 func TestVirtiofsIDTranslations(t *testing.T) {
 	t.Parallel()

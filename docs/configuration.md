@@ -273,6 +273,8 @@ Specifically for `virtiofsd` the default values are the following:
 
 > **NOTE**: virtiofsd's own default sandbox, `namespace`, needs `CAP_SYS_ADMIN`, which the monitor does not have under libcontainer. `chroot` needs only root and `CAP_SYS_CHROOT` (in the default capability set of containerd, CRI-O and Docker) and confines virtiofsd's file server to the shared directory. It limits path-traversal bugs, not arbitrary code execution inside virtiofsd. Set `--sandbox none` only for a container that drops `CAP_SYS_CHROOT`.
 
+> **NOTE**: urunc needs virtiofsd 1.13.2 or later. Older releases are killed by their own seccomp filter when a guest creates a file using a supplementary group (for example, a non-root pod with `fsGroup`): that path goes through musl's `setgroups()`, which signals every thread with `tkill`. Upstream fixed it in `4c9e5a0` (v1.13.1, allow `tkill`) and `8b64c81` (v1.13.2, call the syscall directly). urunc also passes `--inode-file-handles=never` unless `options` sets `--inode-file-handles` itself: since v1.13.3 virtiofsd defaults to `prefer`, which needs `CAP_DAC_READ_SEARCH`, a capability the container's set normally lacks (and should, since it allows opening any host inode by handle), so virtiofsd would fail to start.
+
 **Example:**
 
 ```toml
