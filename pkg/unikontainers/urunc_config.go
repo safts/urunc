@@ -218,7 +218,7 @@ func defaultMonitorsConfig() map[string]types.MonitorConfig {
 
 func defaultExtraBinConfig() map[string]types.ExtraBinConfig {
 	return map[string]types.ExtraBinConfig{
-		"virtiofsd": {Path: "/usr/libexec/virtiofsd", Options: "--cache always --sandbox none"},
+		"virtiofsd": {Path: "/usr/libexec/virtiofsd", Options: "--cache always --sandbox chroot"},
 	}
 }
 

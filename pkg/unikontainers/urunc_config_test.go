@@ -35,7 +35,7 @@ const (
 	testHvtMemoryKey     = "urunc_config.monitors.hvt.default_memory_mb"
 	testVirtiofsdPathKey = "urunc_config.extra_binaries.virtiofsd.path"
 	testVirtiofsdOptsKey = "urunc_config.extra_binaries.virtiofsd.options"
-	testVirtiofsdDefOpts = "--cache always --sandbox none"
+	testVirtiofsdDefOpts = "--cache always --sandbox chroot"
 	testBinOpts          = "opt1 opt2"
 	testQemuBinaryPath   = "/usr/bin/qemu"
 	testQemuDataPath     = "/usr/local/share/qemu"
