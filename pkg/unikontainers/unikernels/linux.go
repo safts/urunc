@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -47,6 +48,14 @@ const (
 	tmpfsEndMarker    string = "UTE" // tmpfs mounts end marker
 	// urunitConfMagic starts a urunit configuration of NUL-terminated records
 	urunitConfMagic string = "URUNIT1"
+	// exitStatusGuestFile is where urunit records the exit status on a shared
+	// filesystem root, read back from the container rootfs.
+	exitStatusGuestFile string = "/run/urunc/exit-status"
+	// ExitStatusDisk backs the raw disk urunit records the exit status on for a
+	// block root, whose filesystem the host cannot read. It lives in the
+	// monitor rootfs's private /tmp.
+	ExitStatusDisk   string = "/tmp/urunc-exit-status"
+	exitStatusDiskID string = "exitstatus"
 )
 
 type Linux struct {
@@ -186,7 +195,7 @@ func (l *Linux) CommandString() (string, error) {
 	if l.ContainerBoot && l.Monitor == "cloud-hypervisor" {
 		bootParams += " URUNIT_POWEROFF=1"
 	}
-	if p := ExitStatusFile(l.ContainerBoot, l.RootFsType); p != "" {
+	if p := l.guestExitStatus(); p != "" {
 		bootParams += " URUNIT_EXIT_STATUS=" + p
 	}
 	if l.App != "" {
@@ -197,14 +206,45 @@ func (l *Linux) CommandString() (string, error) {
 	return bootParams, nil
 }
 
-// ExitStatusFile returns the guest path where urunit records the application's
-// exit status, or "" when urunc cannot read it back. Only a container boot over
-// a shared filesystem root leaves the file in the container rootfs on the host.
+// ExitStatusFile returns where urunc reads back the application's exit status
+// recorded by urunit, or "" when it cannot. On a shared filesystem root it is
+// a guest path in the container rootfs; on a block root it is ExitStatusDisk,
+// a path in the monitor rootfs.
 func ExitStatusFile(containerBoot bool, rootfsType string) string {
-	if containerBoot && (rootfsType == "virtiofs" || rootfsType == "9pfs") {
-		return "/run/urunc/exit-status"
+	switch {
+	case !containerBoot:
+		return ""
+	case rootfsType == "virtiofs" || rootfsType == "9pfs":
+		return exitStatusGuestFile
+	case rootfsType == "block":
+		return ExitStatusDisk
 	}
 	return ""
+}
+
+// guestExitStatus returns the guest path urunit records the exit status at:
+// the shared-fs file, or the device of the status disk, which the guest
+// names by its position among the disks like root=/dev/vda.
+func (l *Linux) guestExitStatus() string {
+	if p := ExitStatusFile(l.ContainerBoot, l.RootFsType); p != ExitStatusDisk {
+		return p
+	}
+	for i, b := range l.Blk {
+		if b.ID == exitStatusDiskID {
+			return "/dev/vd" + string(rune('a'+i))
+		}
+	}
+	return ""
+}
+
+// withExitStatusDisk returns blk with the exit status disk appended when this
+// guest is a container boot from a block root and a vd letter is left for it.
+// It never writes into blk's backing array.
+func (l *Linux) withExitStatusDisk(blk []types.BlockDevParams) []types.BlockDevParams {
+	if ExitStatusFile(l.ContainerBoot, l.RootFsType) != ExitStatusDisk || len(blk) >= 26 {
+		return blk
+	}
+	return append(slices.Clip(blk), types.BlockDevParams{ID: exitStatusDiskID, Source: ExitStatusDisk})
 }
 
 func (l *Linux) SupportsBlock() bool {
@@ -329,9 +369,9 @@ func (l *Linux) Init(data types.UnikernelParams) error {
 	}
 
 	l.configureNetwork(data.Net)
-	l.Blk = data.Block
 	l.Tmpfs = data.Tmpfs
 	l.RootFsType = data.Rootfs.Type
+	l.Blk = l.withExitStatusDisk(data.Block)
 	l.RootFsFsType = data.Rootfs.FsType
 	l.Verbose = data.Verbose
 	l.Env = data.EnvVars
@@ -529,7 +569,7 @@ func (c *urunitConfig) args(argv []string) {
 func (c *urunitConfig) blocks(blk []types.BlockDevParams, monitor string) {
 	c.record(blkStartMarker)
 	for _, b := range blk {
-		if b.ID == "rootfs" {
+		if b.ID == "rootfs" || b.ID == exitStatusDiskID {
 			continue
 		}
 		id := b.ID

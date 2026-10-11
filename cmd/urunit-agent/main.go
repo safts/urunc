@@ -155,11 +155,60 @@ func (c *connState) removeSession(id uint32) {
 // rest of its output once the process has exited.
 const outputDrainTimeout = 2 * time.Second
 
+// stdinQueue is how many stdin frames a session buffers ahead of its process.
+// shortcut: a stream more than stdinQueue frames behind (16 MiB at most) still
+// blocks the connection; true independence needs per-stream flow control in
+// agentproto.
+const stdinQueue = 16
+
 // session is one running exec'd process.
 type session struct {
 	cmd   *exec.Cmd
 	ptmx  *os.File       // tty sessions
 	stdin io.WriteCloser // non-tty sessions
+	// in feeds the session's stdin writer, so a process that does not read
+	// its stdin cannot stall the connection's read loop. A nil payload closes
+	// stdin. done is closed once the process has exited.
+	in   chan []byte
+	done chan struct{}
+}
+
+// queueStdin hands a stdin payload (nil: close stdin) to the session's writer.
+func (s *session) queueStdin(p []byte) {
+	select {
+	case s.in <- p:
+	case <-s.done:
+	}
+}
+
+// writeStdin writes queued payloads to the process until it exits. After a
+// write error or a close it keeps draining the queue, discarding.
+func (s *session) writeStdin() {
+	var w io.Writer
+	if s.ptmx != nil {
+		w = s.ptmx
+	} else if s.stdin != nil {
+		w = s.stdin
+	}
+	for {
+		select {
+		case p := <-s.in:
+			switch {
+			case w == nil:
+			case p == nil:
+				if s.stdin != nil {
+					_ = s.stdin.Close()
+				}
+				w = nil
+			default:
+				if _, err := w.Write(p); err != nil {
+					w = nil
+				}
+			}
+		case <-s.done:
+			return
+		}
+	}
 }
 
 // signalInit delivers a signal to the guest's PID 1 (a var so tests can stub it).
@@ -194,16 +243,13 @@ func serveConn(rw io.ReadWriter) {
 				_ = c.writeJSON(agentproto.TypeError, f.Stream, agentproto.Error{Message: err.Error()})
 			}
 		case agentproto.TypeStdin:
-			if s := c.session(f.Stream); s != nil {
-				if s.ptmx != nil {
-					_, _ = s.ptmx.Write(f.Payload)
-				} else if s.stdin != nil {
-					_, _ = s.stdin.Write(f.Payload)
-				}
+			// An empty payload would read as close; it carries nothing anyway.
+			if s := c.session(f.Stream); s != nil && len(f.Payload) > 0 {
+				s.queueStdin(f.Payload)
 			}
 		case agentproto.TypeCloseStdin:
 			if s := c.session(f.Stream); s != nil && s.stdin != nil {
-				_ = s.stdin.Close()
+				s.queueStdin(nil) // after the data already queued
 			}
 		case agentproto.TypeResize:
 			var rs agentproto.Resize
@@ -361,7 +407,7 @@ func (c *connState) open(stream uint32, req agentproto.OpenRequest) error {
 		cmd.Dir = "/"
 	}
 
-	s := &session{cmd: cmd}
+	s := &session{cmd: cmd, in: make(chan []byte, stdinQueue), done: make(chan struct{})}
 	// outputs are the agent's ends of the process's stdout and stderr. The
 	// relays forward them to the peer, and the exit report waits for them.
 	var outputs []*os.File
@@ -452,6 +498,7 @@ func (c *connState) open(stream uint32, req agentproto.OpenRequest) error {
 	}
 
 	c.addSession(stream, s)
+	go s.writeStdin()
 	go func() {
 		code := 0
 		if err := cmd.Wait(); err != nil {
@@ -483,6 +530,7 @@ func (c *connState) open(stream uint32, req agentproto.OpenRequest) error {
 		for _, f := range outputs {
 			_ = f.Close()
 		}
+		close(s.done)
 		c.removeSession(stream)
 		_ = c.writeJSON(agentproto.TypeExit, stream, agentproto.Exit{Code: code})
 	}()
