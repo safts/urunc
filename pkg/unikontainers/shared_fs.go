@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	securejoin "github.com/cyphar/filepath-securejoin"
@@ -133,6 +134,11 @@ func (s sharedfsRootfs) preStartCmd() []string {
 
 	if s.vfsdConfig.Options != "" {
 		argv = append(argv, strings.Fields(s.vfsdConfig.Options)...)
+	}
+	// virtiofsd >= 1.13.3 defaults to file handles, which need CAP_DAC_READ_SEARCH
+	// that the container's capability set normally lacks, so it would fail to start.
+	if !slices.ContainsFunc(argv, func(a string) bool { return strings.HasPrefix(a, "--inode-file-handles") }) {
+		argv = append(argv, "--inode-file-handles=never")
 	}
 
 	return argv

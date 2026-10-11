@@ -78,12 +78,27 @@ RUN ARCH=$(uname -m) && \
     cp /opt/kata-artifacts/opt/kata/bin/qemu-system-${ARCH} ./qemu-system
 
 
+# virtiofsd >= 1.13.2 is required (older releases are killed by their own seccomp
+# filter on supplementary-group creates). Built like upstream's static musl release,
+# which is published for x86_64 only.
+FROM rust:1.88-alpine3.21@sha256:54e937b1530d435dc83b94f5a61ef08365127f2fefbb3789712c5d6f55bbb58c AS virtiofsd-builder
+RUN apk add --no-cache git musl-dev libcap-ng-static libseccomp-static
+RUN git clone --depth 1 --branch v1.13.3 https://gitlab.com/virtio-fs/virtiofsd.git /virtiofsd
+WORKDIR /virtiofsd
+RUN test "$(git rev-parse HEAD)" = "bbf82173682a3e48083771a0a23331e5c23b4924"
+RUN ARCH=$(uname -m) && \
+    RUSTFLAGS='-C target-feature=+crt-static -C link-self-contained=yes' \
+    LIBSECCOMP_LINK_TYPE=static LIBSECCOMP_LIB_PATH=/usr/lib \
+    LIBCAPNG_LINK_TYPE=static LIBCAPNG_LIB_PATH=/usr/lib \
+    cargo build --release --locked --target ${ARCH}-unknown-linux-musl && \
+    mkdir /artifacts && cp target/${ARCH}-unknown-linux-musl/release/virtiofsd /artifacts/virtiofsd
+
 FROM alpine:3.21@sha256:b6a6be0ff92ab6db8acd94f5d1b7a6c2f0f5d10ce3c24af348d333ac6da80685 AS intermediate
 
 COPY --from=solo5-builder /artifacts /urunc-artifacts/hypervisors
 COPY --from=qemu-builder /artifacts /urunc-artifacts/hypervisors
 COPY --from=qemu-builder /opt/kata-artifacts/opt/kata/share/kata-qemu/qemu /urunc-artifacts/opt/kata/share/kata-qemu/qemu
-COPY --from=qemu-builder /opt/kata-artifacts/opt/kata/libexec/virtiofsd /urunc-artifacts/libexec/virtiofsd
+COPY --from=virtiofsd-builder /artifacts/virtiofsd /urunc-artifacts/libexec/virtiofsd
 COPY --from=firecracker-builder /artifacts /urunc-artifacts/hypervisors
 COPY --from=cloud-hypervisor-builder /artifacts /urunc-artifacts/hypervisors
 COPY --from=urunc-builder /artifacts/dist /urunc-artifacts
