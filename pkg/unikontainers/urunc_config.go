@@ -168,7 +168,6 @@ func ParseLogMetricsConfig(path string) (LogMetricsUruncConfig, error) {
 	if err == nil {
 		return initialConf, nil
 	}
-	uniklog.Warnf("Failed to load urunc log/metrics config from %s: %v. Using default configuration.", path, err)
 	return defaultLogMetricsConfig(), err
 }
 

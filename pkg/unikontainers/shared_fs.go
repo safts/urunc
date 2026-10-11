@@ -140,6 +140,11 @@ func (s sharedfsRootfs) preStartCmd() []string {
 	if !slices.ContainsFunc(argv, func(a string) bool { return strings.HasPrefix(a, "--inode-file-handles") }) {
 		argv = append(argv, "--inode-file-handles=never")
 	}
+	// virtiofsd writes to the container's stdio and outlives urunc, so only
+	// its errors belong there; options can still set another level.
+	if !slices.ContainsFunc(argv, func(a string) bool { return strings.HasPrefix(a, "--log-level") }) {
+		argv = append(argv, "--log-level=error")
+	}
 
 	return argv
 }

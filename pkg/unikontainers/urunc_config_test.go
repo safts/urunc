@@ -15,10 +15,12 @@
 package unikontainers
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/urunc-dev/urunc/pkg/unikontainers/types"
 )
@@ -737,4 +739,18 @@ libcontainer = true
 
 		assert.False(t, UruncConfigFromMap(cfgMap).Runtime.Libcontainer)
 	})
+}
+
+// The config is parsed before urunc applies --log, so a warning here would
+// go to stderr, which is the container's log under a shim.
+func TestParseLogMetricsConfigMissingFileLogsNothing(t *testing.T) {
+	var buf bytes.Buffer
+	out := logrus.StandardLogger().Out
+	logrus.SetOutput(&buf)
+	t.Cleanup(func() { logrus.SetOutput(out) })
+
+	cfg, err := ParseLogMetricsConfig(filepath.Join(t.TempDir(), "missing.toml"))
+	assert.Error(t, err)
+	assert.Equal(t, defaultLogMetricsConfig(), cfg)
+	assert.Empty(t, buf.String())
 }

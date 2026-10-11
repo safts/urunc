@@ -50,9 +50,24 @@ func TestVirtiofsdPreStartCmd(t *testing.T) {
 		assert.Zero(t, count(argv, "--inode-file-handles=never"))
 	})
 
+	t.Run("default options get --log-level=error once", func(t *testing.T) {
+		t.Parallel()
+		s := sharedfsRootfs{sfsType: "virtiofs", vfsdConfig: types.ExtraBinConfig{
+			Path: "/usr/libexec/virtiofsd", Options: "--cache always --sandbox chroot"}}
+		assert.Equal(t, 1, count(s.preStartCmd(), "--log-level=error"))
+	})
+
+	t.Run("an explicit --log-level is kept", func(t *testing.T) {
+		t.Parallel()
+		s := sharedfsRootfs{sfsType: "virtiofs", vfsdConfig: types.ExtraBinConfig{
+			Path: "/usr/libexec/virtiofsd", Options: "--log-level debug"}}
+		argv := s.preStartCmd()
+		assert.Equal(t, 1, count(argv, "--log-level"))
+		assert.Zero(t, count(argv, "--log-level=error"))
+	})
+
 	t.Run("9pfs has no pre-start command", func(t *testing.T) {
 		t.Parallel()
 		assert.Nil(t, sharedfsRootfs{sfsType: "9pfs"}.preStartCmd())
 	})
 }
-
