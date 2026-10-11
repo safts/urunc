@@ -114,6 +114,31 @@ func TestAgentExecNonTTY(t *testing.T) {
 	}
 }
 
+// TestAgentExecGroups checks that OpenRequest.Groups become the exec'd
+// process's supplementary groups, so a gid absent from the guest's /etc/group
+// (a Kubernetes fsGroup or supplementalGroups entry) still grants access.
+func TestAgentExecGroups(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to switch credentials")
+	}
+	cli := dialAgent(t)
+	stdout, _, code := runSession(t, cli, 11, agentproto.OpenRequest{
+		Argv:   []string{"id", "-G"},
+		User:   "1000:1000",
+		Groups: []uint32{1000, 2000},
+	})
+	if code != 0 || strings.TrimSpace(stdout) != "1000 2000" {
+		t.Errorf("id -G = %q (code %d), want \"1000 2000\"", stdout, code)
+	}
+	stdout, _, _ = runSession(t, cli, 12, agentproto.OpenRequest{
+		Argv: []string{"id", "-G"},
+		User: "1000:1000",
+	})
+	if strings.Contains(stdout, "2000") {
+		t.Errorf("id -G without Groups = %q, want no 2000", stdout)
+	}
+}
+
 // TestAgentExecTTY exercises the pty path: stdin/stdout/stderr are one
 // terminal, so output arrives as TypeStdout and the child sees a tty.
 func TestAgentExecTTY(t *testing.T) {

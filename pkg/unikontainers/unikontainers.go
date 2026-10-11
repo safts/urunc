@@ -505,8 +505,6 @@ func (u *Unikontainer) newRootfsBuilder(containerRootfs string, rootfsParams typ
 			memory:         memory,
 			bootKernelHost: u.State.Annotations[annotBootKernel],
 			bootInitrdHost: u.State.Annotations[annotBootInitrd],
-			containerUID:   u.Spec.Process.User.UID,
-			containerGID:   u.Spec.Process.User.GID,
 		}
 	default:
 		return noRootfs{
@@ -656,9 +654,10 @@ func (u *Unikontainer) buildMonitorSpec(rootfsParams types.RootfsParams, monRes 
 		Monitor: vmmType,
 		Version: unikernelVersion,
 		ProcConf: types.ProcessConfig{
-			UID:     u.Spec.Process.User.UID,
-			GID:     u.Spec.Process.User.GID,
-			WorkDir: u.Spec.Process.Cwd,
+			UID:            u.Spec.Process.User.UID,
+			GID:            u.Spec.Process.User.GID,
+			WorkDir:        u.Spec.Process.Cwd,
+			AdditionalGids: u.Spec.Process.User.AdditionalGids,
 		},
 		NetDevName: u.State.Annotations[annotNetDev],
 		BlkDevName: u.State.Annotations[annotBlkDev],
@@ -876,10 +875,9 @@ func (u *Unikontainer) Exec(metrics m.Writer) error {
 	}
 
 	// Spawn virtiofsd (when the shared-fs rootfs needs it) while still root: it
-	// has to write the shared rootfs on the guest's behalf and to translate the
-	// container user onto the host owner of its volumes (see the --translate-uid/
-	// --translate-gid options in sharedfsRootfs.preStartCmd), both of which need
-	// privileges the monitor no longer has after the drop below. The vhost-user
+	// has to write the shared rootfs and volumes on the guest's behalf, creating
+	// files as the guest caller's uid/gid, which needs privileges the monitor no
+	// longer has after the drop below. The vhost-user
 	// socket it creates is then root-owned; while still root, wait for it and
 	// relax its mode so the monitor can connect after dropping to the container
 	// user.

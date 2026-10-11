@@ -97,6 +97,8 @@ type ProcessConfig struct {
 	UID     uint32 // The uid of the process inside the guest
 	GID     uint32 // The gid of the process inside the guest
 	WorkDir string // The workdir of the process inside the guest
+	// AdditionalGids are the supplementary groups of the process inside the guest
+	AdditionalGids []uint32
 }
 
 // UnikernelParams holds the data required by the unikernels commandline

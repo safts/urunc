@@ -74,9 +74,12 @@ type OpenRequest struct {
 	// resolves names and lone uids against the guest's /etc/passwd and
 	// fills in HOME/USER/LOGNAME/SHELL and supplementary groups.
 	User string `json:"user,omitempty"`
-	TTY  bool   `json:"tty"`
-	Rows uint16 `json:"rows,omitempty"`
-	Cols uint16 `json:"cols,omitempty"`
+	// Groups, when set and User is not empty, are the process's supplementary
+	// groups, replacing those from the guest's /etc/group.
+	Groups []uint32 `json:"groups,omitempty"`
+	TTY    bool     `json:"tty"`
+	Rows   uint16   `json:"rows,omitempty"`
+	Cols   uint16   `json:"cols,omitempty"`
 }
 
 // Resize updates the window size of a tty session.

@@ -120,8 +120,8 @@ func runMonitor(metrics m.Writer, ms monitorSpec) error {
 	}
 
 	// Spawn virtiofsd while still root, as Exec does: it writes the shared
-	// rootfs on the guest's behalf and translates the container user onto the
-	// host owner of its volumes, which needs privileges the monitor drops below.
+	// rootfs and volumes on the guest's behalf, creating files as the guest
+	// caller's uid/gid, which needs privileges the monitor drops below.
 	// Its vhost-user socket is then root-owned, so relax its mode for the
 	// monitor.
 	err = spawnProcess(ms.PreStartCmd)

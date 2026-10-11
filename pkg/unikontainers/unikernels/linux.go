@@ -466,6 +466,10 @@ func (l *Linux) buildUrunitConfig() string {
 	c.record(lpcStartMarker)
 	c.record("UID:", strconv.FormatUint(uint64(l.ProcConfig.UID), 10))
 	c.record("GID:", strconv.FormatUint(uint64(l.ProcConfig.GID), 10))
+	// An older urunit skips unknown records, so AGID is always safe to write.
+	for _, g := range l.ProcConfig.AdditionalGids {
+		c.record("AGID:", strconv.FormatUint(uint64(g), 10))
+	}
 	c.record("WD:", l.ProcConfig.WorkDir)
 	// Only the boot initrd's urunit, built with this urunc, is known to take
 	// the command from the configuration and the tmpfs section; a urunit
