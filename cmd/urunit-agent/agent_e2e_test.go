@@ -331,3 +331,47 @@ func TestAgentExecChildHoldsNoConnection(t *testing.T) {
 		}
 	}
 }
+
+// TestAgentSlowStdinDoesNotBlockOtherStreams fills the stdin pipe of a process
+// that never reads it and checks the connection still serves other streams,
+// and the stuck stream's own signals.
+func TestAgentSlowStdinDoesNotBlockOtherStreams(t *testing.T) {
+	cli := dialAgent(t)
+	if err := agentproto.WriteJSON(cli, agentproto.TypeOpen, 21, agentproto.OpenRequest{
+		Argv: []string{"sleep", "30"},
+	}); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	// More than a pipe holds (64 KiB), fewer frames than the stdin queue.
+	chunk := bytes.Repeat([]byte("x"), 32*1024)
+	for i := 0; i < 4; i++ {
+		if err := agentproto.WriteFrame(cli, agentproto.TypeStdin, 21, chunk); err != nil {
+			t.Fatalf("stdin: %v", err)
+		}
+	}
+	stdout, _, code := runSession(t, cli, 22, agentproto.OpenRequest{
+		Argv: []string{"echo", "ok"},
+	})
+	if strings.TrimSpace(stdout) != "ok" || code != 0 {
+		t.Fatalf("stream 22 = %q (code %d), want \"ok\" and 0", stdout, code)
+	}
+
+	if err := agentproto.WriteJSON(cli, agentproto.TypeSignal, 21, agentproto.Signal{Signal: int(unix.SIGKILL)}); err != nil {
+		t.Fatalf("signal: %v", err)
+	}
+	_ = cli.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		f, err := agentproto.ReadFrame(cli)
+		if err != nil {
+			t.Fatalf("waiting for stream 21 to exit: %v", err)
+		}
+		if f.Stream == 21 && f.Type == agentproto.TypeExit {
+			var ex agentproto.Exit
+			_ = json.Unmarshal(f.Payload, &ex)
+			if ex.Code != 137 {
+				t.Errorf("stream 21 exit = %d, want 137", ex.Code)
+			}
+			return
+		}
+	}
+}

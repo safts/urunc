@@ -1038,9 +1038,17 @@ func execMonitor(metrics m.Writer, vmm types.VMM, execArgs types.ExecArgs, execC
 // to the monitor and does not return on success. It prints nothing on success,
 // since stdout and stderr are the container's log.
 func superviseMonitor(vmm types.VMM, execArgs types.ExecArgs, execCmd []string, statusFile string) error {
-	// Resolve after the pivot, so an image symlink cannot point outside the
-	// container rootfs.
-	hostStatus, err := confineToContainerRootfs(statusFile)
+	hostStatus := statusFile
+	var err error
+	if statusFile == unikernels.ExitStatusDisk {
+		// The backing file of the guest's raw status disk, zeroed so a guest
+		// that records nothing leaves the monitor's status.
+		err = os.WriteFile(statusFile, make([]byte, 4096), 0o600)
+	} else {
+		// Resolve after the pivot, so an image symlink cannot point outside
+		// the container rootfs.
+		hostStatus, err = confineToContainerRootfs(statusFile)
+	}
 	if err != nil {
 		return err
 	}
@@ -1083,7 +1091,8 @@ func superviseMonitor(vmm types.VMM, execArgs types.ExecArgs, execCmd []string, 
 }
 
 // guestExitCode maps the monitor's wait status and urunit's exit record
-// ("EXIT:<n>" or "SIGNAL:<n>", optionally newline-terminated) to the
+// ("EXIT:<n>" or "SIGNAL:<n>", optionally newline-terminated and, on a raw
+// status disk, NUL-padded) to the
 // container's exit code. A monitor that failed or was killed wins; a missing
 // or malformed record leaves the monitor's own status.
 func guestExitCode(vmm syscall.WaitStatus, record []byte) int {
@@ -1093,7 +1102,8 @@ func guestExitCode(vmm syscall.WaitStatus, record []byte) int {
 	if vmm.ExitStatus() != 0 {
 		return vmm.ExitStatus()
 	}
-	key, val, ok := strings.Cut(strings.TrimSuffix(string(record), "\n"), ":")
+	line, _, _ := strings.Cut(strings.TrimRight(string(record), "\x00"), "\n")
+	key, val, ok := strings.Cut(line, ":")
 	if !ok {
 		return 0
 	}

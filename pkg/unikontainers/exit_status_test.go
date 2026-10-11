@@ -15,6 +15,7 @@
 package unikontainers
 
 import (
+	"strings"
 	"syscall"
 	"testing"
 
@@ -40,6 +41,11 @@ func TestGuestExitCode(t *testing.T) {
 		{exited(0), "EXIT:-1", 0},
 		{exited(0), "SIGNAL:0", 0},
 		{exited(0), "SIGNAL:128", 0},
+		// A raw status disk: the record, then NUL padding.
+		{exited(0), "EXIT:3\n" + strings.Repeat("\x00", 25), 3},
+		{exited(0), "SIGNAL:11\n" + strings.Repeat("\x00", 22), 139},
+		{exited(0), strings.Repeat("\x00", 32), 0},
+		{exited(0), "EXIT:7" + strings.Repeat("\x00", 26), 7},
 		{exited(1), "EXIT:3", 1},
 		{syscall.WaitStatus(syscall.SIGKILL), "EXIT:3", 137},
 	} {

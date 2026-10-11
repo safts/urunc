@@ -157,24 +157,33 @@ func TestExitStatusFile(t *testing.T) {
 
 	assert.Equal(t, "/run/urunc/exit-status", ExitStatusFile(true, "virtiofs"))
 	assert.Equal(t, "/run/urunc/exit-status", ExitStatusFile(true, "9pfs"))
-	for _, rootfs := range []string{"block", "initrd", ""} {
+	assert.Equal(t, ExitStatusDisk, ExitStatusFile(true, "block"))
+	for _, rootfs := range []string{"initrd", ""} {
 		assert.Empty(t, ExitStatusFile(true, rootfs), rootfs)
 	}
 	assert.Empty(t, ExitStatusFile(false, "virtiofs"))
+	assert.Empty(t, ExitStatusFile(false, "block"))
 }
 
 func TestLinuxCommandStringExitStatus(t *testing.T) {
 	t.Parallel()
 
+	rootfs := types.BlockDevParams{ID: "rootfs", Source: "/dev/dm-1", MountPoint: "/"}
+	vol := func(id string) types.BlockDevParams {
+		return types.BlockDevParams{ID: id, Source: "/dev/" + id, MountPoint: "/" + id}
+	}
 	for _, tc := range []struct {
 		rootfs        string
 		containerBoot bool
-		want          bool
+		blk           []types.BlockDevParams
+		want          string
 	}{
-		{"virtiofs", true, true},
-		{"9pfs", true, true},
-		{"block", true, false},
-		{"virtiofs", false, false},
+		{"virtiofs", true, nil, "/run/urunc/exit-status"},
+		{"9pfs", true, nil, "/run/urunc/exit-status"},
+		{"block", true, []types.BlockDevParams{rootfs}, "/dev/vdb"},
+		{"block", true, []types.BlockDevParams{rootfs, vol("v1"), vol("v2")}, "/dev/vdd"},
+		{"block", false, []types.BlockDevParams{rootfs}, ""},
+		{"virtiofs", false, nil, ""},
 	} {
 		l := &Linux{
 			App:           containerBootInit,
@@ -184,15 +193,59 @@ func TestLinuxCommandStringExitStatus(t *testing.T) {
 			InitrdConf:    true,
 			ContainerBoot: tc.containerBoot,
 		}
+		l.Blk = l.withExitStatusDisk(tc.blk)
 		cmdline, err := l.CommandString()
 		require.NoError(t, err)
 		kernelPart, _, _ := strings.Cut(cmdline, " -- ")
-		if tc.want {
-			assert.Contains(t, kernelPart, "URUNIT_EXIT_STATUS=/run/urunc/exit-status", tc)
+		if tc.want != "" {
+			assert.Contains(t, kernelPart, "URUNIT_EXIT_STATUS="+tc.want+" ", tc)
 		} else {
 			assert.NotContains(t, cmdline, "URUNIT_EXIT_STATUS", tc)
 		}
 	}
+}
+
+func TestLinuxBlockRootExitStatusDisk(t *testing.T) {
+	t.Parallel()
+
+	blk := make([]types.BlockDevParams, 1, 4)
+	blk[0] = types.BlockDevParams{ID: "rootfs", Source: "/dev/dm-1", MountPoint: "/"}
+	vol := types.BlockDevParams{ID: "vol1", Source: "/dev/dm-2", MountPoint: "/data"}
+	blk = append(blk, vol)
+	orig := append([]types.BlockDevParams(nil), blk...)
+
+	l := &Linux{Monitor: "qemu", RootFsType: "block", ContainerBoot: true}
+	l.Blk = l.withExitStatusDisk(blk)
+	assert.Equal(t, orig, blk, "the caller's block list is not modified")
+	assert.Empty(t, blk[:3][2].ID, "the caller's backing array is not written")
+	assert.Len(t, l.Blk, 3)
+
+	var qemu []string
+	for _, a := range l.MonitorBlockCli() {
+		qemu = append(qemu, a.ExactArgs...)
+	}
+	joined := strings.Join(qemu, " ")
+	assert.Contains(t, joined, "serial=exitstatus")
+	assert.Contains(t, joined, "file="+ExitStatusDisk)
+
+	l.Monitor = "firecracker"
+	fc := l.MonitorBlockCli()
+	assert.Equal(t, "FCexitstatus", fc[len(fc)-1].ID)
+	assert.Equal(t, ExitStatusDisk, fc[len(fc)-1].Path)
+
+	conf := l.buildUrunitConfig()
+	assert.NotContains(t, conf, "exitstatus", "urunit does not mount the status disk")
+	assert.Contains(t, conf, "ID:FCvol1\x00")
+
+	// Not a container boot, a shared-fs root, or no letter left: no disk.
+	for _, other := range []*Linux{
+		{RootFsType: "block"},
+		{RootFsType: "virtiofs", ContainerBoot: true},
+	} {
+		assert.Equal(t, blk, other.withExitStatusDisk(blk))
+	}
+	full := make([]types.BlockDevParams, 26)
+	assert.Len(t, l.withExitStatusDisk(full), 26)
 }
 
 func TestLinuxContainerBootUrunitConfigTmpfs(t *testing.T) {
