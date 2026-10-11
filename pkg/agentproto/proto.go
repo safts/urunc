@@ -50,6 +50,13 @@ const (
 	TypeError      byte = 9 // agent -> client: Error (JSON), closes the stream
 )
 
+// InitStream is reserved for the guest's init: exec sessions never use stream
+// 0. A TypeSignal frame on InitStream asks the agent to send the signal to
+// PID 1; the agent replies on InitStream with TypeExit (code 0) when kill(2)
+// succeeded, or TypeError when it failed. An agent that predates this ignores
+// the frame and sends nothing back.
+const InitStream uint32 = 0
+
 // DefaultVsockPort is the guest vsock port the agent listens on. The host
 // dials (guest-cid, DefaultVsockPort) over AF_VSOCK to reach it.
 const DefaultVsockPort = 1024

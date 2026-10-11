@@ -16,16 +16,22 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v3"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/urunc-dev/urunc/pkg/agentproto"
+	"github.com/urunc-dev/urunc/pkg/unikontainers"
 )
 
 var killCommand = &cli.Command{
@@ -75,8 +81,69 @@ signal to the init process of the "ubuntu01" container:
 			return err
 		}
 
+		// Give the guest's init a chance at a graceful stop; on any failure
+		// fall back to signalling the monitor, which ends the VM.
+		if (signal == unix.SIGTERM || signal == unix.SIGINT) && unikontainer.HasAgent() {
+			err := signalAgentInit(unikontainer.AgentTransportInfo(), signal)
+			if err == nil {
+				return nil
+			}
+			logrus.WithError(err).Warnf("could not deliver %v to the guest's init, signalling the monitor", signal)
+		}
+
 		return unikontainer.Signal(signal)
 	},
+}
+
+// guestSignalTimeout bounds both the agent dial and the wait for its reply.
+const guestSignalTimeout = 5 * time.Second
+
+func signalAgentInit(t unikontainers.AgentTransport, sig unix.Signal) error {
+	conn, err := dialAgentTransport(t, guestSignalTimeout)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return signalGuestInit(conn, sig, guestSignalTimeout)
+}
+
+// signalGuestInit asks the agent on conn to send sig to the guest's PID 1 and
+// waits up to timeout for its reply. The read runs in a goroutine because an
+// AF_VSOCK connection is an os.File that may not support deadlines; the caller
+// closes conn, which ends it.
+func signalGuestInit(conn io.ReadWriter, sig unix.Signal, timeout time.Duration) error {
+	if err := agentproto.WriteJSON(conn, agentproto.TypeSignal, agentproto.InitStream, agentproto.Signal{Signal: int(sig)}); err != nil {
+		return fmt.Errorf("send signal to the in-guest agent: %w", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		for {
+			f, err := agentproto.ReadFrame(conn)
+			if err != nil {
+				done <- fmt.Errorf("read the in-guest agent's reply: %w", err)
+				return
+			}
+			if f.Stream != agentproto.InitStream {
+				continue
+			}
+			switch f.Type {
+			case agentproto.TypeExit:
+				done <- nil
+				return
+			case agentproto.TypeError:
+				var e agentproto.Error
+				_ = json.Unmarshal(f.Payload, &e)
+				done <- fmt.Errorf("in-guest agent could not signal init: %s", e.Message)
+				return
+			}
+		}
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		return fmt.Errorf("no reply from the in-guest agent within %v", timeout)
+	}
 }
 
 // Taken from https://github.com/opencontainers/runc/blob/af6b9e7fa96026c4fdac93e6e4fddf69ae348532/kill.go

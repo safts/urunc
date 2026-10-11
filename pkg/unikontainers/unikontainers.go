@@ -553,6 +553,12 @@ func (u *Unikontainer) AgentTransportInfo() AgentTransport {
 	return t
 }
 
+// HasAgent reports whether the in-guest exec agent can be reached: the
+// container is a running container boot.
+func (u *Unikontainer) HasAgent() bool {
+	return u.isContainerBoot() && u.isRunning()
+}
+
 // isContainerBoot reports whether the container is a generic container boot:
 // an unmodified image booted with the host kernel and boot initrd named by the
 // bootKernel and bootInitrd annotations.
