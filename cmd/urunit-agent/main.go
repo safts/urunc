@@ -162,6 +162,9 @@ type session struct {
 	stdin io.WriteCloser // non-tty sessions
 }
 
+// signalInit delivers a signal to the guest's PID 1 (a var so tests can stub it).
+var signalInit = func(s syscall.Signal) error { return unix.Kill(1, s) }
+
 func serveConn(rw io.ReadWriter) {
 	c := &connState{w: rw, sessions: make(map[uint32]*session)}
 	for {
@@ -212,7 +215,13 @@ func serveConn(rw io.ReadWriter) {
 		case agentproto.TypeSignal:
 			var sg agentproto.Signal
 			if err := json.Unmarshal(f.Payload, &sg); err == nil {
-				if s := c.session(f.Stream); s != nil && s.cmd.Process != nil {
+				if f.Stream == agentproto.InitStream {
+					if err := signalInit(syscall.Signal(sg.Signal)); err != nil {
+						_ = c.writeJSON(agentproto.TypeError, f.Stream, agentproto.Error{Message: err.Error()})
+					} else {
+						_ = c.writeJSON(agentproto.TypeExit, f.Stream, agentproto.Exit{Code: 0})
+					}
+				} else if s := c.session(f.Stream); s != nil && s.cmd.Process != nil {
 					_ = s.cmd.Process.Signal(syscall.Signal(sg.Signal))
 				}
 			}
