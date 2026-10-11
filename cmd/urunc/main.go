@@ -142,11 +142,17 @@ func main() {
 					return nil, err
 				}
 			}
-			// ignore error since ParseLogMetricsConfig will print a warning and return default values
-			cfg, _ := unikontainers.ParseLogMetricsConfig(unikontainers.ResolveUruncConfigPath())
+			// On error ParseLogMetricsConfig returns the defaults; warn only once
+			// --log is applied, so the warning does not go to the container's stderr.
+			cfgPath := unikontainers.ResolveUruncConfigPath()
+			cfg, cfgErr := unikontainers.ParseLogMetricsConfig(cfgPath)
 			err := configLogrus(cmd, cfg.Log)
 			if err != nil {
 				return nil, err
+			}
+			// The monitor rootfs never holds the host's config file.
+			if cfgErr != nil && !isMonitorInvocation(cmd) {
+				logrus.Warnf("Failed to load urunc log/metrics config from %s: %v. Using default configuration.", cfgPath, cfgErr)
 			}
 			metrics, err = m.NewZerologMetrics(cfg.Timestamps.Enabled, cfg.Timestamps.Destination, "")
 			if err != nil {

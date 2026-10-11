@@ -106,10 +106,9 @@ func libcontainerCreate(cmd *cli.Command, uruncCfg *unikontainers.UruncConfig) (
 }
 
 // buildMonitorArgs assembles the "urunc monitor" argv setting the same log format
-// and enabling debug logs based on the current urunc process.
-// TODO: THe logs will be printed in stdout. We need to pass another fd with the logs
-// in order to store them in the correct file.
-func buildMonitorArgs(id string, logFormat string) []string {
+// and enabling debug logs based on the current urunc process. With logFile, the
+// monitor logs to urunc's log file, inherited at unikontainers.LogFD.
+func buildMonitorArgs(id string, logFormat string, logFile bool) []string {
 	args := []string{"/proc/self/exe"}
 	logLevel := logrus.GetLevel()
 	if logLevel >= logrus.DebugLevel {
@@ -123,6 +122,10 @@ func buildMonitorArgs(id string, logFormat string) []string {
 		args = append(args, "--log-format", logFormat)
 	}
 
+	if logFile {
+		args = append(args, "--log", "/proc/self/fd/"+strconv.Itoa(unikontainers.LogFD))
+	}
+
 	args = append(args, monitorArgv, id)
 
 	return args
@@ -133,8 +136,13 @@ func buildMonitorArgs(id string, logFormat string) []string {
 // pivot: /proc is always mounted in the monitor rootfs, so this re-execs the
 // sealed urunc binary without urunc having to be copied into that rootfs.
 func monitorProcess(cmd *cli.Command, u *unikontainers.Unikontainer, readyFile *os.File) (*libcontainer.Process, error) {
+	// The --log path is a host path that does not exist in the monitor rootfs,
+	// so pass the open file instead; otherwise the monitor's logs would end up
+	// in the container's stderr.
+	logFile, toFile := logrus.StandardLogger().Out.(*os.File)
+	toFile = toFile && !logrusToStderr()
 	process := &libcontainer.Process{
-		Args: buildMonitorArgs(u.State.ID, cmd.String("log-format")),
+		Args: buildMonitorArgs(u.State.ID, cmd.String("log-format"), toFile),
 		Env:  os.Environ(),
 		// "/" rather than the spec's Cwd: that one is the guest's working
 		// directory
@@ -143,9 +151,13 @@ func monitorProcess(cmd *cli.Command, u *unikontainers.Unikontainer, readyFile *
 		Init:         true,
 		Capabilities: unikontainers.MonitorCapabilities(u.Spec),
 		LogLevel:     strconv.Itoa(int(logrus.GetLevel())),
-		// The ready pipe's write end. It must be the only/first ExtraFile so the
+		// The ready pipe's write end. It must stay the first ExtraFile so the
 		// monitor inherits it at unikontainers.ReadyPipeFD:
 		ExtraFiles: []*os.File{readyFile},
+	}
+	if toFile {
+		// lands on unikontainers.LogFD
+		process.ExtraFiles = append(process.ExtraFiles, logFile)
 	}
 
 	if !u.Spec.Process.Terminal {

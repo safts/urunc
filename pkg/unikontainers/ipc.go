@@ -39,6 +39,9 @@ const (
 	// the urunc monitor process.The ready pipe is passed as the single,
 	// first ExtraFile so it is always fd 3. All other files are placed after it.
 	ReadyPipeFD = 3
+	// LogFD is urunc's log file in the urunc monitor process, passed as the
+	// second ExtraFile when urunc logs to a file.
+	LogFD = 4
 	// Socket for messages towards reexec. The reexec process listens in this socket
 	reexecSock = "reexec.sock"
 	// Socket for messages from reexec. The reexec process writes in this socket

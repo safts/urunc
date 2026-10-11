@@ -36,6 +36,8 @@ func ExecMonitor(metrics m.Writer) error {
 	// so, it gets CLOEXEC cleared. Therefore, restore it before spawning any child
 	// (e.g. virtiofsd from PreStartCmd): so the child does not inherit it.
 	syscall.CloseOnExec(ReadyPipeFD)
+	// Same for the inherited log file (a no-op when it was not passed).
+	syscall.CloseOnExec(LogFD)
 	// this function is supposed to be called after the libcontainer has created the
 	// monitor container and is therefore in "/".
 	const pivotedRoot = "/"
