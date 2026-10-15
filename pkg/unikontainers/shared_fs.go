@@ -38,9 +38,9 @@ type sharedfsRootfs struct {
 	mountedPath string
 	sfsType     string
 	memory      uint64
-	// containerCaps is the container's bounding set, nil when its spec
-	// declares no capabilities (virtiofsdModcaps).
-	containerCaps []string
+	// containerCaps is the container's capability sets, nil when its spec
+	// declares none (virtiofsdModcaps).
+	containerCaps *specs.LinuxCapabilities
 	// bootKernelHost and bootInitrdHost are the host kernel and boot initrd of
 	// a generic container boot (the bootKernel/bootInitrd annotations). When
 	// set, they are mounted read-only into the monitor rootfs so that the
@@ -162,19 +162,21 @@ func (s sharedfsRootfs) preStartCmd() []string {
 // them and exit before the VM boots.
 var virtiofsdOwnCaps = []string{"CAP_MKNOD", "CAP_SETFCAP"}
 
-// virtiofsdModcaps returns virtiofsd's --modcaps value for a container whose
-// bounding set is containerCaps: every one of virtiofsdOwnCaps the container
-// lacks, removed ("-mknod:-setfcap"). The guest then cannot create device
-// nodes or set file capabilities through the shared filesystem unless the
-// container could. A nil containerCaps (no capabilities in the spec, so the
-// monitor keeps urunc's own set) removes none.
-func virtiofsdModcaps(containerCaps []string) string {
+// virtiofsdModcaps returns virtiofsd's --modcaps value for a container with
+// the capability sets containerCaps: every one of virtiofsdOwnCaps missing
+// from its bounding set, removed ("-mknod:-setfcap"). The guest then cannot
+// create device nodes or set file capabilities through the shared filesystem
+// unless the container could. A container that drops every capability has
+// an empty (often nil) bounding set and loses both. A nil containerCaps (no
+// capabilities in the spec, so the monitor keeps urunc's own set) removes
+// none.
+func virtiofsdModcaps(containerCaps *specs.LinuxCapabilities) string {
 	if containerCaps == nil {
 		return ""
 	}
 	var drop []string
 	for _, c := range virtiofsdOwnCaps {
-		if !slices.Contains(containerCaps, c) {
+		if !slices.Contains(containerCaps.Bounding, c) {
 			drop = append(drop, "-"+strings.ToLower(strings.TrimPrefix(c, "CAP_")))
 		}
 	}

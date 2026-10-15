@@ -17,6 +17,7 @@ package unikontainers
 import (
 	"testing"
 
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/urunc-dev/urunc/pkg/unikontainers/types"
 )
@@ -66,23 +67,27 @@ func TestVirtiofsdPreStartCmd(t *testing.T) {
 		assert.Zero(t, count(argv, "--log-level=error"))
 	})
 
-	t.Run("a container without CAP_MKNOD and CAP_SETFCAP takes them from virtiofsd", func(t *testing.T) {
+	// A CRI container with drop: [ALL] reaches urunc as capabilities whose
+	// sets are all nil, not empty: that must count as "drops everything".
+	t.Run("a container that drops every capability takes CAP_MKNOD and CAP_SETFCAP from virtiofsd", func(t *testing.T) {
 		t.Parallel()
-		s := sharedfsRootfs{sfsType: "virtiofs", containerCaps: []string{}, vfsdConfig: types.ExtraBinConfig{
-			Path: "/usr/libexec/virtiofsd", Options: "--cache always --sandbox chroot"}}
-		assert.Equal(t, 1, count(s.preStartCmd(), "--modcaps=-mknod:-setfcap"))
+		for _, caps := range []*specs.LinuxCapabilities{{}, {Bounding: []string{}}} {
+			s := sharedfsRootfs{sfsType: "virtiofs", containerCaps: caps, vfsdConfig: types.ExtraBinConfig{
+				Path: "/usr/libexec/virtiofsd", Options: "--cache always --sandbox chroot"}}
+			assert.Equal(t, 1, count(s.preStartCmd(), "--modcaps=-mknod:-setfcap"), "caps %+v", caps)
+		}
 	})
 
 	t.Run("a container with CAP_MKNOD keeps it for virtiofsd", func(t *testing.T) {
 		t.Parallel()
-		s := sharedfsRootfs{sfsType: "virtiofs", containerCaps: []string{"CAP_MKNOD"}, vfsdConfig: types.ExtraBinConfig{
+		s := sharedfsRootfs{sfsType: "virtiofs", containerCaps: &specs.LinuxCapabilities{Bounding: []string{"CAP_MKNOD"}}, vfsdConfig: types.ExtraBinConfig{
 			Path: "/usr/libexec/virtiofsd", Options: "--cache always --sandbox chroot"}}
 		assert.Equal(t, 1, count(s.preStartCmd(), "--modcaps=-setfcap"))
 	})
 
 	t.Run("a container with both, or without a capability list, adds no --modcaps", func(t *testing.T) {
 		t.Parallel()
-		for _, caps := range [][]string{{"CAP_MKNOD", "CAP_SETFCAP"}, nil} {
+		for _, caps := range []*specs.LinuxCapabilities{{Bounding: []string{"CAP_MKNOD", "CAP_SETFCAP"}}, nil} {
 			s := sharedfsRootfs{sfsType: "virtiofs", containerCaps: caps, vfsdConfig: types.ExtraBinConfig{
 				Path: "/usr/libexec/virtiofsd", Options: "--cache always --sandbox chroot"}}
 			for _, a := range s.preStartCmd() {
@@ -93,7 +98,7 @@ func TestVirtiofsdPreStartCmd(t *testing.T) {
 
 	t.Run("an explicit --modcaps is kept", func(t *testing.T) {
 		t.Parallel()
-		s := sharedfsRootfs{sfsType: "virtiofs", containerCaps: []string{}, vfsdConfig: types.ExtraBinConfig{
+		s := sharedfsRootfs{sfsType: "virtiofs", containerCaps: &specs.LinuxCapabilities{}, vfsdConfig: types.ExtraBinConfig{
 			Path: "/usr/libexec/virtiofsd", Options: "--modcaps=-mknod"}}
 		argv := s.preStartCmd()
 		assert.Equal(t, 1, count(argv, "--modcaps=-mknod"))

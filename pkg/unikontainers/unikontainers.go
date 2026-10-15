@@ -503,7 +503,7 @@ func (u *Unikontainer) newRootfsBuilder(containerRootfs string, rootfsParams typ
 			vfsdConfig:     u.UruncCfg.ExtraBins["virtiofsd"],
 			sharedPath:     containerRootfsMountPath,
 			memory:         memory,
-			containerCaps:  u.containerBoundingCaps(),
+			containerCaps:  u.containerCaps(),
 			bootKernelHost: u.State.Annotations[annotBootKernel],
 			bootInitrdHost: u.State.Annotations[annotBootInitrd],
 		}
@@ -1121,13 +1121,13 @@ func guestExitCode(vmm syscall.WaitStatus, record []byte) int {
 	return 0
 }
 
-// containerBoundingCaps returns the container's bounding set, nil when its
-// spec declares no capabilities.
-func (u *Unikontainer) containerBoundingCaps() []string {
-	if u.Spec.Process == nil || u.Spec.Process.Capabilities == nil {
+// containerCaps returns the container's capability sets, nil when its spec
+// declares none.
+func (u *Unikontainer) containerCaps() *specs.LinuxCapabilities {
+	if u.Spec.Process == nil {
 		return nil
 	}
-	return u.Spec.Process.Capabilities.Bounding
+	return u.Spec.Process.Capabilities
 }
 
 // makeMonitorSockDir creates the directory the monitor binds its own sockets
