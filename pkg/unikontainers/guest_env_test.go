@@ -122,3 +122,40 @@ func TestBuildMonitorSpecSetsGuestHostname(t *testing.T) {
 
 	assert.Equal(t, "issue-repo-42-0", ms.GuestParams.Hostname)
 }
+
+// A Kubernetes app container joins its pod sandbox's UTS namespace, so the
+// CRI leaves spec.hostname empty and passes the pod's hostname as the
+// HOSTNAME variable instead (containerd's CRI, container_create.go). The
+// guest takes it from there.
+func TestGuestHostname(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		hostname string
+		env      []string
+		want     string
+	}{
+		{name: "spec hostname", hostname: "pod-a", env: []string{"HOSTNAME=other"}, want: "pod-a"},
+		{name: "CRI app container", hostname: "", env: []string{"PATH=/bin", "HOSTNAME=issue-repo-42-0"}, want: "issue-repo-42-0"},
+		{name: "last HOSTNAME wins, as in the process environment", env: []string{"HOSTNAME=a", "HOSTNAME=b"}, want: "b"},
+		{name: "none", env: []string{"PATH=/bin"}, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, guestHostname(tt.hostname, tt.env))
+		})
+	}
+}
+
+func TestBuildMonitorSpecTakesHostnameFromTheCRIEnv(t *testing.T) {
+	t.Parallel()
+	u, rootfsParams := newSpecUnikontainer(t, t.TempDir())
+	u.State.Bundle = t.TempDir()
+	u.Spec.Hostname = ""
+	u.Spec.Process.Env = []string{"PATH=/bin", "HOSTNAME=issue-repo-42-0"}
+
+	ms := u.buildMonitorSpec(rootfsParams, monitorResources{Rootfs: rootfsParams})
+
+	assert.Equal(t, "issue-repo-42-0", ms.GuestParams.Hostname)
+}
