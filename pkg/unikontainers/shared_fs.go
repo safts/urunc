@@ -38,6 +38,9 @@ type sharedfsRootfs struct {
 	mountedPath string
 	sfsType     string
 	memory      uint64
+	// containerCaps is the container's bounding set, nil when its spec
+	// declares no capabilities (virtiofsdModcaps).
+	containerCaps []string
 	// bootKernelHost and bootInitrdHost are the host kernel and boot initrd of
 	// a generic container boot (the bootKernel/bootInitrd annotations). When
 	// set, they are mounted read-only into the monitor rootfs so that the
@@ -140,6 +143,11 @@ func (s sharedfsRootfs) preStartCmd() []string {
 	if !slices.ContainsFunc(argv, func(a string) bool { return strings.HasPrefix(a, "--inode-file-handles") }) {
 		argv = append(argv, "--inode-file-handles=never")
 	}
+	if !slices.ContainsFunc(argv, func(a string) bool { return strings.HasPrefix(a, "--modcaps") }) {
+		if modcaps := virtiofsdModcaps(s.containerCaps); modcaps != "" {
+			argv = append(argv, "--modcaps="+modcaps)
+		}
+	}
 	// virtiofsd writes to the container's stdio and outlives urunc, so only
 	// its errors belong there; options can still set another level.
 	if !slices.ContainsFunc(argv, func(a string) bool { return strings.HasPrefix(a, "--log-level") }) {
@@ -147,6 +155,30 @@ func (s sharedfsRootfs) preStartCmd() []string {
 	}
 
 	return argv
+}
+
+// virtiofsdOwnCaps are the capabilities virtiofsd keeps by default that urunc
+// does not give the monitor's setup (monSetupCaps): it would fail to apply
+// them and exit before the VM boots.
+var virtiofsdOwnCaps = []string{"CAP_MKNOD", "CAP_SETFCAP"}
+
+// virtiofsdModcaps returns virtiofsd's --modcaps value for a container whose
+// bounding set is containerCaps: every one of virtiofsdOwnCaps the container
+// lacks, removed ("-mknod:-setfcap"). The guest then cannot create device
+// nodes or set file capabilities through the shared filesystem unless the
+// container could. A nil containerCaps (no capabilities in the spec, so the
+// monitor keeps urunc's own set) removes none.
+func virtiofsdModcaps(containerCaps []string) string {
+	if containerCaps == nil {
+		return ""
+	}
+	var drop []string
+	for _, c := range virtiofsdOwnCaps {
+		if !slices.Contains(containerCaps, c) {
+			drop = append(drop, "-"+strings.ToLower(strings.TrimPrefix(c, "CAP_")))
+		}
+	}
+	return strings.Join(drop, ":")
 }
 
 func chooseTmpfsSize(sfsType string, mem uint64) string {

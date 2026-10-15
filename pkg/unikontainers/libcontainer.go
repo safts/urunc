@@ -23,11 +23,41 @@ import (
 	"github.com/urunc-dev/urunc/pkg/unikontainers/types"
 )
 
-// monCaps all the necessary capabilities for the "urunc init" process
-// to finalize the setup of the monitor's execution environment.
-//   - CAP_NET_ADMIN: required for the creation and setup of th the tap device
+// monCaps are the capabilities the monitor keeps on top of the container's own
+// set, in all five sets, up to its execve:
+//   - CAP_NET_ADMIN: required for the creation and setup of the tap device
 //     inside the container's network namespace.
 var monCaps = []string{"CAP_NET_ADMIN"}
+
+// monSetupCaps are the capabilities "urunc init" needs to finish the monitor's
+// environment, whatever the container's own set. The container's capabilities
+// describe its workload, which runs in the guest; the setup is urunc's own
+// and runs as root on the host side:
+//   - CAP_NET_ADMIN: the tap device (monCaps).
+//   - CAP_SYS_CHROOT: virtiofsd's chroot sandbox (--sandbox chroot).
+//   - CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER, CAP_FSETID, CAP_SETUID,
+//     CAP_SETGID: virtiofsd's own set (it serves the guest's files as each
+//     caller's uid/gid), and urunc's chown of the monitor's devices and socket
+//     directory and its setgroups/setgid/setuid to the container user.
+//   - CAP_SETPCAP: dropping the bounding set, by virtiofsd for itself and by
+//     urunc before the monitor's execve (dropToExecCaps).
+//
+// None of them reaches the monitor: dropToExecCaps cuts the bounding set back
+// to the container's set plus monCaps before the drop to the container user,
+// so the monitor runs with exactly what it ran with before. virtiofsd's
+// CAP_MKNOD and CAP_SETFCAP are not here: sharedfsRootfs takes them away from
+// it unless the container has them (virtiofsdModcaps).
+var monSetupCaps = []string{
+	"CAP_NET_ADMIN",
+	"CAP_SYS_CHROOT",
+	"CAP_CHOWN",
+	"CAP_DAC_OVERRIDE",
+	"CAP_FOWNER",
+	"CAP_FSETID",
+	"CAP_SETUID",
+	"CAP_SETGID",
+	"CAP_SETPCAP",
+}
 
 // monitorOCISpec builds the OCI spec that describes the monitor's
 // execution environment. It consists of the container's spec,
@@ -49,14 +79,35 @@ func monitorOCISpec(spec *specs.Spec, monRes monitorResources, rootfsParams type
 	return &monSpec
 }
 
-// MonitorCapabilities returns the capability set the monitor process requires
-// to finalize the execution environment for the monitor. Currently, it consists
-// of the container's own set plus CAP_NET_ADMIN in all five sets.
-// TODO: Narrow down to the extremely necessary capabilities.
+// MonitorCapabilities returns the capability set libcontainer starts "urunc
+// init" with: the container's own set plus monSetupCaps in the bounding,
+// effective and permitted sets, and plus monCaps in the inheritable and
+// ambient ones. A container that drops capabilities (drop: [ALL]) would
+// otherwise leave the setup unable to chroot virtiofsd, chown or change user,
+// and no VM would start. dropToExecCaps takes the extra ones away again
+// before the monitor's execve.
 func MonitorCapabilities(spec *specs.Spec) *configs.Capabilities {
-	caps := specCapabilities(spec)
+	caps := MonitorExecCapabilities(spec)
 	if caps == nil {
 		uniklog.Warn("The container declares no capabilities. The monitor inherits urunc's own set.")
+		return nil
+	}
+
+	for _, capab := range monSetupCaps {
+		caps.Bounding = withCap(caps.Bounding, capab)
+		caps.Effective = withCap(caps.Effective, capab)
+		caps.Permitted = withCap(caps.Permitted, capab)
+	}
+
+	return caps
+}
+
+// MonitorExecCapabilities returns the capability set the monitor runs with
+// after the setup: the container's own set plus monCaps in all five sets, or
+// nil when the spec declares none (the monitor then keeps urunc's own set).
+func MonitorExecCapabilities(spec *specs.Spec) *configs.Capabilities {
+	caps := specCapabilities(spec)
+	if caps == nil {
 		return nil
 	}
 

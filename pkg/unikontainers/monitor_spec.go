@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 
 	securejoin "github.com/cyphar/filepath-securejoin"
+	"github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/urunc-dev/urunc/pkg/unikontainers/types"
@@ -44,6 +45,9 @@ type monitorSpec struct {
 	DNSServer     string                `json:"dnsServer,omitempty"`
 	User          specs.User            `json:"user"`
 	PreStartCmd   []string              `json:"preStartCmd,omitempty"`
+	// ExecCaps is the capability set the monitor runs with once the setup is
+	// done (MonitorExecCapabilities); nil keeps the set it was started with.
+	ExecCaps *configs.Capabilities `json:"execCaps,omitempty"`
 }
 
 // writeMonitorSpec builds the monitor spec and writes it into the monitor rootfs.
@@ -52,6 +56,7 @@ func (u *Unikontainer) writeMonitorSpec(rootfsParams types.RootfsParams, monRes 
 
 	mSpec.NetworkType = u.getNetworkType()
 	mSpec.User = u.Spec.Process.User
+	mSpec.ExecCaps = MonitorExecCapabilities(u.Spec)
 
 	// The post-pivot process sees the monitor rootfs as "/", so the guest rootfs
 	// path it is handed has to be relative to it.

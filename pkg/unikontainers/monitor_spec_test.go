@@ -104,6 +104,32 @@ func TestWriteMonitorSpec(t *testing.T) {
 		assert.Equal(t, "/", got.GuestParams.Rootfs.MonRootfs)
 	})
 
+	t.Run("carries the monitor's post-setup capabilities", func(t *testing.T) {
+		t.Parallel()
+		monRootfs := t.TempDir()
+		u, rootfsParams := newSpecUnikontainer(t, monRootfs)
+		u.Spec.Process.Capabilities = &specs.LinuxCapabilities{}
+
+		err := u.writeMonitorSpec(rootfsParams, monitorResources{})
+		require.NoError(t, err)
+
+		got := readMonitorSpecFile(t, monRootfs)
+		require.NotNil(t, got.ExecCaps)
+		assert.Equal(t, []string{"CAP_NET_ADMIN"}, got.ExecCaps.Bounding)
+		assert.Equal(t, []string{"CAP_NET_ADMIN"}, got.ExecCaps.Effective)
+	})
+
+	t.Run("no capabilities in the spec leaves the monitor's set alone", func(t *testing.T) {
+		t.Parallel()
+		monRootfs := t.TempDir()
+		u, rootfsParams := newSpecUnikontainer(t, monRootfs)
+
+		err := u.writeMonitorSpec(rootfsParams, monitorResources{})
+		require.NoError(t, err)
+
+		assert.Nil(t, readMonitorSpecFile(t, monRootfs).ExecCaps)
+	})
+
 	t.Run("does not persist the monitor environment", func(t *testing.T) {
 		// t.Setenv forbids t.Parallel.
 		t.Setenv("URUNC_TEST_SECRET", "do-not-write-me")

@@ -259,11 +259,79 @@ func TestBuildContainerConfig(t *testing.T) {
 }
 
 func TestMonitorCapabilities(t *testing.T) {
-	t.Run("adds CAP_NET_ADMIN to all five sets", func(t *testing.T) {
+	t.Run("adds the setup set to bounding, effective and permitted", func(t *testing.T) {
 		t.Parallel()
 		spec := testSpec()
 
 		caps := MonitorCapabilities(spec)
+
+		require.NotNil(t, caps)
+		for name, set := range map[string][]string{
+			"bounding":  caps.Bounding,
+			"effective": caps.Effective,
+			"permitted": caps.Permitted,
+		} {
+			for _, c := range monSetupCaps {
+				assert.Contains(t, set, c, "%s must carry %s", name, c)
+			}
+			assert.Contains(t, set, "CAP_CHOWN", "%s must keep the container's own capabilities", name)
+		}
+		for name, set := range map[string][]string{
+			"inheritable": caps.Inheritable,
+			"ambient":     caps.Ambient,
+		} {
+			assert.Contains(t, set, "CAP_NET_ADMIN", "%s must carry CAP_NET_ADMIN", name)
+			assert.NotContains(t, set, "CAP_SYS_CHROOT", "%s must not carry the setup set", name)
+		}
+
+		// The container's spec must not have been touched.
+		assert.NotContains(t, spec.Process.Capabilities.Bounding, monCaps[0])
+	})
+
+	// A pod with capabilities: drop: [ALL] (restricted Pod Security) gives an
+	// empty set; the setup still needs its own to start virtiofsd, chown and
+	// change user, or no VM boots.
+	t.Run("a container that drops every capability still gets the setup set", func(t *testing.T) {
+		t.Parallel()
+		spec := testSpec()
+		spec.Process.Capabilities = &specs.LinuxCapabilities{}
+
+		caps := MonitorCapabilities(spec)
+
+		require.NotNil(t, caps)
+		assert.ElementsMatch(t, monSetupCaps, caps.Bounding)
+		assert.ElementsMatch(t, monSetupCaps, caps.Effective)
+		assert.ElementsMatch(t, monSetupCaps, caps.Permitted)
+		assert.Equal(t, []string{"CAP_NET_ADMIN"}, caps.Inheritable)
+		assert.Equal(t, []string{"CAP_NET_ADMIN"}, caps.Ambient)
+	})
+
+	t.Run("does not duplicate a capability already present", func(t *testing.T) {
+		t.Parallel()
+		spec := testSpec()
+		spec.Process.Capabilities.Bounding = []string{monCaps[0], "CAP_SYS_CHROOT"}
+
+		caps := MonitorCapabilities(spec)
+
+		require.NotNil(t, caps)
+		assert.ElementsMatch(t, monSetupCaps, caps.Bounding)
+	})
+
+	t.Run("a spec without capabilities gives nil", func(t *testing.T) {
+		t.Parallel()
+		spec := testSpec()
+		spec.Process.Capabilities = nil
+
+		assert.Nil(t, MonitorCapabilities(spec))
+	})
+}
+
+func TestMonitorExecCapabilities(t *testing.T) {
+	t.Run("is the container's set plus CAP_NET_ADMIN in all five sets", func(t *testing.T) {
+		t.Parallel()
+		spec := testSpec()
+
+		caps := MonitorExecCapabilities(spec)
 
 		require.NotNil(t, caps)
 		for name, set := range map[string][]string{
@@ -273,23 +341,22 @@ func TestMonitorCapabilities(t *testing.T) {
 			"inheritable": caps.Inheritable,
 			"ambient":     caps.Ambient,
 		} {
-			assert.Contains(t, set, monCaps[0], "%s must carry CAP_NET_ADMIN", name)
+			assert.Contains(t, set, "CAP_NET_ADMIN", "%s must carry CAP_NET_ADMIN", name)
 			assert.Contains(t, set, "CAP_CHOWN", "%s must keep the container's own capabilities", name)
 		}
-
-		// The container's spec must not have been touched.
-		assert.NotContains(t, spec.Process.Capabilities.Bounding, monCaps[0])
 	})
 
-	t.Run("does not duplicate a CAP_NET_ADMIN already present", func(t *testing.T) {
+	t.Run("a container that drops every capability keeps only CAP_NET_ADMIN", func(t *testing.T) {
 		t.Parallel()
 		spec := testSpec()
-		spec.Process.Capabilities.Bounding = []string{monCaps[0]}
+		spec.Process.Capabilities = &specs.LinuxCapabilities{}
 
-		caps := MonitorCapabilities(spec)
+		caps := MonitorExecCapabilities(spec)
 
 		require.NotNil(t, caps)
-		assert.Equal(t, []string{monCaps[0]}, caps.Bounding)
+		assert.Equal(t, []string{"CAP_NET_ADMIN"}, caps.Bounding)
+		assert.Equal(t, []string{"CAP_NET_ADMIN"}, caps.Effective)
+		assert.Equal(t, []string{"CAP_NET_ADMIN"}, caps.Permitted)
 	})
 
 	t.Run("a spec without capabilities gives nil", func(t *testing.T) {
@@ -297,6 +364,6 @@ func TestMonitorCapabilities(t *testing.T) {
 		spec := testSpec()
 		spec.Process.Capabilities = nil
 
-		assert.Nil(t, MonitorCapabilities(spec))
+		assert.Nil(t, MonitorExecCapabilities(spec))
 	})
 }

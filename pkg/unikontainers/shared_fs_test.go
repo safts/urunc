@@ -66,6 +66,40 @@ func TestVirtiofsdPreStartCmd(t *testing.T) {
 		assert.Zero(t, count(argv, "--log-level=error"))
 	})
 
+	t.Run("a container without CAP_MKNOD and CAP_SETFCAP takes them from virtiofsd", func(t *testing.T) {
+		t.Parallel()
+		s := sharedfsRootfs{sfsType: "virtiofs", containerCaps: []string{}, vfsdConfig: types.ExtraBinConfig{
+			Path: "/usr/libexec/virtiofsd", Options: "--cache always --sandbox chroot"}}
+		assert.Equal(t, 1, count(s.preStartCmd(), "--modcaps=-mknod:-setfcap"))
+	})
+
+	t.Run("a container with CAP_MKNOD keeps it for virtiofsd", func(t *testing.T) {
+		t.Parallel()
+		s := sharedfsRootfs{sfsType: "virtiofs", containerCaps: []string{"CAP_MKNOD"}, vfsdConfig: types.ExtraBinConfig{
+			Path: "/usr/libexec/virtiofsd", Options: "--cache always --sandbox chroot"}}
+		assert.Equal(t, 1, count(s.preStartCmd(), "--modcaps=-setfcap"))
+	})
+
+	t.Run("a container with both, or without a capability list, adds no --modcaps", func(t *testing.T) {
+		t.Parallel()
+		for _, caps := range [][]string{{"CAP_MKNOD", "CAP_SETFCAP"}, nil} {
+			s := sharedfsRootfs{sfsType: "virtiofs", containerCaps: caps, vfsdConfig: types.ExtraBinConfig{
+				Path: "/usr/libexec/virtiofsd", Options: "--cache always --sandbox chroot"}}
+			for _, a := range s.preStartCmd() {
+				assert.NotContains(t, a, "--modcaps", "caps %v", caps)
+			}
+		}
+	})
+
+	t.Run("an explicit --modcaps is kept", func(t *testing.T) {
+		t.Parallel()
+		s := sharedfsRootfs{sfsType: "virtiofs", containerCaps: []string{}, vfsdConfig: types.ExtraBinConfig{
+			Path: "/usr/libexec/virtiofsd", Options: "--modcaps=-mknod"}}
+		argv := s.preStartCmd()
+		assert.Equal(t, 1, count(argv, "--modcaps=-mknod"))
+		assert.Zero(t, count(argv, "--modcaps=-mknod:-setfcap"))
+	})
+
 	t.Run("9pfs has no pre-start command", func(t *testing.T) {
 		t.Parallel()
 		assert.Nil(t, sharedfsRootfs{sfsType: "9pfs"}.preStartCmd())

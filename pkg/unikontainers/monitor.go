@@ -142,10 +142,19 @@ func runMonitor(metrics m.Writer, ms monitorSpec) error {
 		return err
 	}
 
-	// Drop to the container user, which also clears the capabilities the tap
-	// device needed. From here on the monitor runs unprivileged.
+	// Take the setup's capabilities (monSetupCaps) out of the bounding set
+	// while CAP_SETPCAP is still there, then drop to the container user,
+	// which also clears the capabilities the tap device needed. A root
+	// monitor keeps its user, so it gets the container's set back explicitly.
+	// From here on the monitor runs with no more than it was given.
+	if err = dropToExecCaps(ms.ExecCaps); err != nil {
+		return err
+	}
 	err = setupUser(ms.User)
 	if err != nil {
+		return err
+	}
+	if err = restoreExecCaps(ms.ExecCaps, ms.User.UID); err != nil {
 		return err
 	}
 	metrics.Capture(m.TS17)
