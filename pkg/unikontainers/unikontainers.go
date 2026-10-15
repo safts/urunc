@@ -651,7 +651,7 @@ func (u *Unikontainer) buildMonitorSpec(rootfsParams types.RootfsParams, monRes 
 
 	guest := types.UnikernelParams{
 		CmdLine: u.Spec.Process.Args,
-		EnvVars: u.Spec.Process.Env,
+		EnvVars: guestEnvWithHome(u.Spec.Process.Env, u.containerRootfsDir(), u.Spec.Process.User.UID),
 		Monitor: vmmType,
 		Version: unikernelVersion,
 		ProcConf: types.ProcessConfig{
@@ -1171,19 +1171,23 @@ func setupUser(user specs.User) error {
 	return nil
 }
 
+// containerRootfsDir returns the host path of the container's own rootfs.
+func (u *Unikontainer) containerRootfsDir() string {
+	rootfsDir := filepath.Clean(u.Spec.Root.Path)
+	if !filepath.IsAbs(rootfsDir) {
+		rootfsDir = filepath.Join(filepath.Clean(u.State.Bundle), rootfsDir)
+	}
+	return rootfsDir
+}
+
 // monitorRootfs returns the host path of the monitor's rootfs: the separate
 // one under the bundle if it exists, else the container's own rootfs.
 func (u *Unikontainer) monitorRootfs() string {
-	bundleDir := filepath.Clean(u.State.Bundle)
-	rootfsDir := filepath.Clean(u.Spec.Root.Path)
-	if !filepath.IsAbs(rootfsDir) {
-		rootfsDir = filepath.Join(bundleDir, rootfsDir)
-	}
-	monRootfs := filepath.Join(bundleDir, monitorRootfsDirName)
+	monRootfs := filepath.Join(filepath.Clean(u.State.Bundle), monitorRootfsDirName)
 	if _, err := os.Stat(monRootfs); err == nil {
 		return monRootfs
 	}
-	return rootfsDir
+	return u.containerRootfsDir()
 }
 
 // removeControlSocket deletes the monitor's control socket. It skips a missing
