@@ -57,3 +57,21 @@ func passwdHome(rootfs string, uid uint32) string {
 	}
 	return users[0].Home
 }
+
+// guestHostname is the hostname the guest takes: spec.hostname, else the
+// last HOSTNAME in env. A Kubernetes app container joins its pod sandbox's
+// UTS namespace, so the CRI sets no spec.hostname for it and passes the pod's
+// hostname as HOSTNAME instead; under runc the container sees the sandbox's
+// hostname, which is that value. "" when neither is set.
+func guestHostname(hostname string, env []string) string {
+	if hostname != "" {
+		return hostname
+	}
+	h := ""
+	for _, e := range env {
+		if v, ok := strings.CutPrefix(e, "HOSTNAME="); ok {
+			h = v
+		}
+	}
+	return h
+}
