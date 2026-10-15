@@ -63,10 +63,12 @@ type Linux struct {
 	Command string
 	// Argv is the container command of a generic container boot, verbatim.
 	// It reaches urunit in its configuration, not on the kernel command line.
-	Argv       []string
-	Monitor    string
-	Env        []string
-	Net        LinuxNet
+	Argv    []string
+	Monitor string
+	Env     []string
+	Net     LinuxNet
+	// Hostname is the guest's hostname (types.UnikernelParams.Hostname).
+	Hostname   string
 	Blk        []types.BlockDevParams
 	Tmpfs      []types.TmpfsParams
 	RootFsType string
@@ -159,10 +161,11 @@ func (l *Linux) CommandString() (string, error) {
 		bootParams += " " + rootParams
 	}
 	if l.Net.Address != "" {
-		netParams := fmt.Sprintf("ip=%s::%s:%s:urunc:eth0:off",
+		netParams := fmt.Sprintf("ip=%s::%s:%s:%s:eth0:off",
 			l.Net.Address,
 			l.Net.Gateway,
-			l.Net.Mask)
+			l.Net.Mask,
+			guestHostname(l.Hostname))
 		bootParams += " " + netParams
 	}
 	switch {
@@ -377,6 +380,7 @@ func (l *Linux) Init(data types.UnikernelParams) error {
 	l.Env = data.EnvVars
 	l.Monitor = data.Monitor
 	l.ProcConfig = data.ProcConf
+	l.Hostname = data.Hostname
 
 	// if the application contains urunit, then we assume
 	// that the init process is based on our urunit
@@ -611,4 +615,23 @@ func (c *urunitConfig) String() string {
 func newLinux() *Linux {
 	linuxStruct := new(Linux)
 	return linuxStruct
+}
+
+// defaultGuestHostname is the hostname of a guest whose container has none,
+// or one the kernel's ip= parameter cannot carry.
+const defaultGuestHostname = "urunc"
+
+// guestHostname returns h when it can go in the ip= kernel parameter as the
+// guest's hostname: at most 64 bytes (the kernel's UTS limit), letters,
+// digits, '-' and '.' only, so it can neither split ip= nor the command line.
+func guestHostname(h string) string {
+	if h == "" || len(h) > 64 {
+		return defaultGuestHostname
+	}
+	for _, c := range h {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '.') {
+			return defaultGuestHostname
+		}
+	}
+	return h
 }
