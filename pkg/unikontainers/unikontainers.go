@@ -660,6 +660,7 @@ func (u *Unikontainer) buildMonitorSpec(rootfsParams types.RootfsParams, monRes 
 			WorkDir:        u.Spec.Process.Cwd,
 			AdditionalGids: u.Spec.Process.User.AdditionalGids,
 		},
+		Hostname:   u.Spec.Hostname,
 		NetDevName: u.State.Annotations[annotNetDev],
 		BlkDevName: u.State.Annotations[annotBlkDev],
 		Rootfs:     rootfsParams,

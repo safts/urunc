@@ -115,6 +115,9 @@ type UnikernelParams struct {
 	Tmpfs      []TmpfsParams // tmpfs mounts the guest makes itself
 	Rootfs     RootfsParams  // Information about rootfs
 	ProcConf   ProcessConfig // Information for the process execution inside the guest
+	// Hostname is the container's hostname (spec.hostname), which the guest
+	// takes as its own, as runc sets it through the UTS namespace.
+	Hostname string
 	// ContainerBoot marks a generic container boot: an unmodified OCI image
 	// booted with a host kernel and boot initrd, whose /init mounts the shared
 	// container rootfs and hands over to urunit. InitrdPath then names the

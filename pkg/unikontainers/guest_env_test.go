@@ -110,3 +110,15 @@ func TestBuildMonitorSpecSetsGuestHome(t *testing.T) {
 	assert.Equal(t, []string{"PATH=/bin", "HOME=/home/app"}, ms.GuestParams.EnvVars)
 	assert.Equal(t, []string{"PATH=/bin"}, u.Spec.Process.Env)
 }
+
+// The guest's hostname is the container's, as runc sets it.
+func TestBuildMonitorSpecSetsGuestHostname(t *testing.T) {
+	t.Parallel()
+	u, rootfsParams := newSpecUnikontainer(t, t.TempDir())
+	u.State.Bundle = t.TempDir()
+	u.Spec.Hostname = "issue-repo-42-0"
+
+	ms := u.buildMonitorSpec(rootfsParams, monitorResources{Rootfs: rootfsParams})
+
+	assert.Equal(t, "issue-repo-42-0", ms.GuestParams.Hostname)
+}
