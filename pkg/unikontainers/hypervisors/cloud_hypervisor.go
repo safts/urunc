@@ -15,8 +15,10 @@
 package hypervisors
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/urunc-dev/urunc/pkg/unikontainers/types"
 	"golang.org/x/sys/unix"
@@ -27,13 +29,39 @@ const (
 	CloudHypervisorBinary string  = "cloud-hypervisor"
 )
 
+// chTermTimeout bounds how long a SIGTERM'd Cloud Hypervisor may take to exit
+// before it is killed.
+var chTermTimeout = 5 * time.Second
+
 type CloudHypervisor struct {
 	binaryPath string
 	binary     string
 }
 
+// Signal sends signal to the Cloud Hypervisor process. Cloud Hypervisor handles
+// SIGTERM and SIGINT by shutting the VMM down itself (the guest is not asked),
+// and that shutdown can hang on a stuck vCPU or device thread. So for those
+// signals wait chTermTimeout for it to exit, then kill it.
 func (ch *CloudHypervisor) Signal(pid int, signal unix.Signal) error {
-	return unix.Kill(pid, signal)
+	err := unix.Kill(pid, signal)
+	if signal != unix.SIGTERM && signal != unix.SIGINT {
+		return err
+	}
+	if errors.Is(err, unix.ESRCH) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(chTermTimeout)
+	for time.Now().Before(deadline) {
+		if errors.Is(unix.Kill(pid, 0), unix.ESRCH) {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	vmmLog.Warnf("cloud-hypervisor pid %d did not exit %v after %v, killing it", pid, chTermTimeout, signal)
+	return killProcess(pid)
 }
 
 func (ch *CloudHypervisor) Stop(pid int) error {

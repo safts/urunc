@@ -15,11 +15,15 @@
 package hypervisors
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/urunc-dev/urunc/pkg/unikontainers/types"
+	"golang.org/x/sys/unix"
 )
 
 const testCHBinary = "/usr/bin/cloud-hypervisor"
@@ -75,4 +79,47 @@ func TestCloudHypervisorBuildExecCmdSocket(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCloudHypervisorSignalTermEscalates verifies a SIGTERM that the monitor
+// does not act on ends in a SIGKILL after a bounded wait, so kill returns with
+// the process gone instead of leaving the stop to the guest or the VMM.
+func TestCloudHypervisorSignalTermEscalates(t *testing.T) {
+	old := chTermTimeout
+	chTermTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { chTermTimeout = old })
+
+	// A stand-in for a VMM whose shutdown hangs: it ignores SIGTERM.
+	cmd := exec.Command("sh", "-c", `trap "" TERM; echo ready; read x`)
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	defer stdin.Close()
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	// Wait until the trap is installed before signalling.
+	_, err = stdout.Read(make([]byte, 6))
+	require.NoError(t, err)
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
+
+	ch := &CloudHypervisor{}
+	require.NoError(t, ch.Signal(cmd.Process.Pid, unix.SIGTERM))
+
+	select {
+	case <-exited:
+	case <-time.After(time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("process still alive after SIGTERM returned")
+	}
+}
+
+// TestCloudHypervisorSignalTermExited verifies SIGTERM to a monitor that is
+// already gone is not an error.
+func TestCloudHypervisorSignalTermExited(t *testing.T) {
+	cmd := exec.Command("true")
+	require.NoError(t, cmd.Run())
+
+	ch := &CloudHypervisor{}
+	assert.NoError(t, ch.Signal(cmd.Process.Pid, unix.SIGTERM))
 }
