@@ -117,9 +117,10 @@ func newUnikontainer(cmd *cli.Command, uruncCfg *unikontainers.UruncConfig) (*un
 	if err != nil {
 		if errors.Is(err, unikontainers.ErrQueueProxy) ||
 			errors.Is(err, unikontainers.ErrNotUnikernel) {
-			// Exec runc to handle non urunc containers.
-			// It should never return.
-			return nil, runcExec()
+			// Exec runc to handle non urunc containers (the pod's
+			// pause container), with the same cgroup driver urunc
+			// would use. It should never return.
+			return nil, runcExec(useSystemdCgroup(cmd.Bool("systemd-cgroup"), bundleCgroupsPath(bundlePath)))
 		}
 		return nil, err
 	}

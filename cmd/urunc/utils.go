@@ -83,8 +83,9 @@ func getUnikontainer(cmd *cli.Command) (*unikontainers.Unikontainer, error) {
 	if err != nil {
 		if errors.Is(err, unikontainers.ErrNotUnikernel) {
 			// Exec runc to handle non unikernel containers
-			// It should never return
-			err = runcExec()
+			// It should never return. Only create needs the cgroup
+			// driver: runc records it in its state for the rest.
+			err = runcExec(false)
 			return nil, err
 		}
 		return nil, err
@@ -93,14 +94,14 @@ func getUnikontainer(cmd *cli.Command) (*unikontainers.Unikontainer, error) {
 	return unikontainer, nil
 }
 
-func runcExec() error {
-	args := os.Args
+// runcExec replaces urunc with runc, with urunc's own arguments. systemdCgroup
+// adds --systemd-cgroup (see isSystemdCgroupsPath).
+func runcExec(systemdCgroup bool) error {
 	binPath, err := exec.LookPath("runc")
 	if err != nil {
 		return err
 	}
-	args[0] = binPath
-	return syscall.Exec(binPath, args, os.Environ())
+	return syscall.Exec(binPath, runcArgs(os.Args, binPath, systemdCgroup), os.Environ())
 }
 
 // newSockPair returns a new SOCK_STREAM unix socket pair.

@@ -40,7 +40,7 @@ func libcontainerCreate(cmd *cli.Command, uruncCfg *unikontainers.UruncConfig) (
 		return err
 	}
 
-	config, err := unikontainer.BuildContainerConfig(cmd.Bool("systemd-cgroup"))
+	config, err := unikontainer.BuildContainerConfig(useSystemdCgroup(cmd.Bool("systemd-cgroup"), specCgroupsPath(unikontainer.Spec)))
 	if err != nil {
 		return err
 	}
