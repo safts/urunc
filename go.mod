@@ -34,6 +34,7 @@ require (
 	github.com/vishvananda/netns v0.0.5
 	golang.org/x/sys v0.48.0
 	google.golang.org/grpc v1.84.0
+	google.golang.org/protobuf v1.36.12
 	k8s.io/cri-api v0.37.1
 )
 
@@ -82,5 +83,4 @@ require (
 	golang.org/x/tools v0.49.0 // indirect
 	google.golang.org/genproto v0.0.0-20260921155816-b14227669459 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260921155816-b14227669459 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 )

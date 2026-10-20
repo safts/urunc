@@ -40,7 +40,7 @@ func init() {
 				return nil, err
 			}
 
-			inner, err := runcTask.NewTaskService(ic.Context, pp.(shim.Publisher), ss.(shutdown.Service))
+			inner, err := runcTask.NewTaskService(ic.Context, exitLogger{pp.(shim.Publisher)}, ss.(shutdown.Service))
 			if err != nil {
 				return nil, err
 			}

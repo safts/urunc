@@ -17,10 +17,14 @@ package containerdshim
 import (
 	"context"
 
+	eventstypes "github.com/containerd/containerd/api/events"
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v2"
+	"github.com/containerd/containerd/events"
+	"github.com/containerd/containerd/runtime/v2/shim"
 	"github.com/containerd/log"
 	"github.com/containerd/ttrpc"
 	containerdShim "github.com/urunc-dev/urunc/pkg/containerd-shim/containerd"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // taskService is urunc's shim-side wrapper around containerd's runc task
@@ -70,6 +74,33 @@ func (s *taskService) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) 
 
 func (s *taskService) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
 	return s.TaskService.Delete(ctx, r)
+}
+
+// Kill logs each request and its outcome, so a stop that never completes shows
+// how far it got.
+func (s *taskService) Kill(ctx context.Context, r *taskAPI.KillRequest) (*emptypb.Empty, error) {
+	l := log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID, "signal": r.Signal, "all": r.All})
+	l.Info("urunc(shim): kill")
+	resp, err := s.TaskService.Kill(ctx, r)
+	if err != nil {
+		l.WithError(err).Info("urunc(shim): kill failed")
+	}
+	return resp, err
+}
+
+// exitLogger logs every task exit the shim publishes. The shim holds a
+// container's exit back until all its execs have exited, so a stop waiting
+// forever with no "publishing task exit" line points there.
+type exitLogger struct {
+	shim.Publisher
+}
+
+func (p exitLogger) Publish(ctx context.Context, topic string, event events.Event) error {
+	if e, ok := event.(*eventstypes.TaskExit); ok {
+		log.G(ctx).WithFields(log.Fields{"id": e.ContainerID, "exec": e.ID, "pid": e.Pid, "status": e.ExitStatus}).
+			Info("urunc(shim): publishing task exit")
+	}
+	return p.Publisher.Publish(ctx, topic, event)
 }
 
 func (s *taskService) RegisterTTRPC(server *ttrpc.Server) error {
