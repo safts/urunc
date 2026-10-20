@@ -57,6 +57,7 @@ func (ch *CloudHypervisor) Signal(pid int, signal unix.Signal) error {
 	deadline := time.Now().Add(chTermTimeout)
 	for time.Now().Before(deadline) {
 		if errors.Is(sysKill(pid, 0), unix.ESRCH) {
+			vmmLog.Infof("cloud-hypervisor pid %d exited after %v", pid, signal)
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)

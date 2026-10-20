@@ -125,6 +125,7 @@ func runExecSession(cmd *cli.Command, ready *execReady) error {
 	if err != nil {
 		return err
 	}
+	exitWithInit(unikontainer.State.Pid)
 
 	proc, err := loadExecProcess(cmd)
 	if err != nil {

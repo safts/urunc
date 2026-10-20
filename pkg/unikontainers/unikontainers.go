@@ -1226,6 +1226,7 @@ func (u *Unikontainer) Signal(signal unix.Signal) error {
 		return err
 	}
 
+	uniklog.Infof("signalling monitor pid %d of container %s with %v", u.State.Pid, u.State.ID, signal)
 	if err = vmm.Signal(u.State.Pid, signal); err != nil {
 		return err
 	}

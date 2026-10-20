@@ -86,6 +86,7 @@ signal to the init process of the "ubuntu01" container:
 		if (signal == unix.SIGTERM || signal == unix.SIGINT) && unikontainer.HasAgent() {
 			err := signalAgentInit(unikontainer.AgentTransportInfo(), signal)
 			if err == nil {
+				logrus.Infof("kill %s: delivered %v to the guest's init", unikontainer.State.ID, signal)
 				return nil
 			}
 			logrus.WithError(err).Warnf("could not deliver %v to the guest's init, signalling the monitor", signal)
