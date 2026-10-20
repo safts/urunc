@@ -32,6 +32,10 @@ import (
 	"github.com/urunc-dev/urunc/pkg/agentproto"
 )
 
+// ttyHangupGrace is how long a hung-up guest process has to exit before it is
+// killed.
+const ttyHangupGrace = 2 * time.Second
+
 // runTTYSession drives a tty exec. The real terminal lives in the guest (the
 // agent allocates a pty next to the workload); this side only needs to give
 // the caller a pty master to attach to and pump raw bytes between it and the
@@ -65,7 +69,9 @@ func runTTYSession(cmd *cli.Command, conn io.ReadWriteCloser, req agentproto.Ope
 	// to forward resizes (see the resize goroutine below).
 	var sizeFd uintptr
 
-	if sockPath := cmd.String("console-socket"); sockPath != "" {
+	sockPath := cmd.String("console-socket")
+	console := sockPath != ""
+	if console {
 		ptmx, tty, err := pty.Open()
 		if err != nil {
 			return fmt.Errorf("could not allocate host pty: %w", err)
@@ -103,17 +109,25 @@ func runTTYSession(cmd *cli.Command, conn io.ReadWriteCloser, req agentproto.Ope
 		return err
 	}
 
+	// When the host side takes the session down, do not orphan the guest
+	// process: hang it up as a vanishing terminal would, and kill it if it
+	// ignores that. Its exit then ends the session normally.
+	var hangupOnce sync.Once
+	hangup := func() {
+		hangupOnce.Do(func() {
+			_ = writeJSON(agentproto.TypeSignal, agentproto.Signal{Signal: int(syscall.SIGHUP)})
+			time.Sleep(ttyHangupGrace)
+			_ = writeJSON(agentproto.TypeSignal, agentproto.Signal{Signal: int(syscall.SIGKILL)})
+		})
+	}
+
 	// A tty carries interrupts as bytes, so a signal reaching this proxy means
-	// the host side is taking the session down (a kill, a closing shim). Do
-	// not orphan the guest process: hang it up as a vanishing terminal would,
-	// and kill it if it ignores that. Its exit then ends the session normally.
+	// the host side is going away (a kill, a closing shim).
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-sigs
-		_ = writeJSON(agentproto.TypeSignal, agentproto.Signal{Signal: int(syscall.SIGHUP)})
-		time.Sleep(2 * time.Second)
-		_ = writeJSON(agentproto.TypeSignal, agentproto.Signal{Signal: int(syscall.SIGKILL)})
+		hangup()
 	}()
 
 	go func() {
@@ -126,6 +140,14 @@ func runTTYSession(cmd *cli.Command, conn io.ReadWriteCloser, req agentproto.Ope
 				}
 			}
 			if err != nil {
+				// The caller closed the console's master (containerd does when
+				// the exec's client goes away): the slave reads EIO. Under runc
+				// the kernel would SIGHUP the process; do the same in the guest.
+				// Without a console, stdin EOF need not be a hangup (it may be a
+				// pipe); a lost terminal reaches us as SIGHUP above.
+				if console {
+					hangup()
+				}
 				return
 			}
 		}
