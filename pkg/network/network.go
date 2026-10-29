@@ -402,6 +402,22 @@ func deleteIngressQdisc(link netlink.Link) error {
 // scanning all links in the current network namespace and returning the first
 // non-loopback link that has an IP address and a default route.
 func discoverContainerIface() (netlink.Link, error) {
+	return retryDump(discoverContainerIfaceOnce)
+}
+
+// retryDump runs f again while a netlink dump it made was interrupted: links
+// or addresses that change during a dump, as another container of the pod
+// sets up its tap, make the kernel flag it inconsistent.
+func retryDump[T any](f func() (T, error)) (T, error) {
+	for i := 0; ; i++ {
+		v, err := f()
+		if !errors.Is(err, netlink.ErrDumpInterrupted) || i == 9 {
+			return v, err
+		}
+	}
+}
+
+func discoverContainerIfaceOnce() (netlink.Link, error) {
 	handle, err := netlink.NewHandle()
 	if err != nil {
 		return nil, err
@@ -424,6 +440,9 @@ func discoverContainerIface() (netlink.Link, error) {
 		}
 		// must have addresses configured
 		addrs, err := handle.AddrList(link, netlink.FAMILY_ALL)
+		if errors.Is(err, netlink.ErrDumpInterrupted) {
+			return nil, err
+		}
 		if err != nil {
 			netlog.Debugf("skipping interface %s: failed to list addresses: %v", attrs.Name, err)
 			continue
@@ -434,6 +453,9 @@ func discoverContainerIface() (netlink.Link, error) {
 		}
 		// look for a default route on this interface
 		routes, err := handle.RouteList(link, netlink.FAMILY_ALL)
+		if errors.Is(err, netlink.ErrDumpInterrupted) {
+			return nil, err
+		}
 		if err != nil {
 			netlog.Debugf("skipping interface %s: failed to list routes: %v", attrs.Name, err)
 			continue

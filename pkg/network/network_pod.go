@@ -15,72 +15,96 @@
 package network
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
-	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/google/nftables"
+	"github.com/google/nftables/binaryutil"
+	"github.com/google/nftables/expr"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
+	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 )
 
-// A pod network lets one pod run service VMs (a database, a cache) next to
-// its primary VM, the container that does the pod's work, when the pod lists
-// them in the com.urunc.unikernel.podServices annotation.
+// A pod network lets one pod run service VMs (a database, a stub API) next
+// to its primary VM, the container that does the pod's work, when the pod
+// lists them in the com.urunc.unikernel.podServices annotation.
 //
-// Every guest gets the pod's address and MAC, as the one guest of a dynamic
-// network does, and tc filters on the pod's interface and the taps sort the
-// frames between them:
-//   - the pod's interface sends a service's TCP ports to that service and
-//     everything else to the primary, and copies every ARP frame to each
-//     service, so they all resolve the gateway;
-//   - a service sends out of the pod only its ports' replies and ARP;
-//   - the primary reaches service i at ServiceAddress(i): those frames go
-//     straight to the service's tap with the addresses rewritten, so the
-//     service sees a peer at ServiceAddress(i) and never its own address.
+// Every VM gets an address of its own on a bridge in the pod's network
+// namespace, and the namespace routes between the bridge and the pod
+// interface:
+//   - the primary's traffic out of the pod is SNATed to the pod's address,
+//     and connections to the pod's address that no service claims are
+//     DNATed to the primary;
+//   - connections to the pod's address on a service's ports (TCP and UDP)
+//     are DNATed to that service, so probes reach it;
+//   - the VMs reach each other on the bridge, and a service cannot open a
+//     connection out of the pod.
 //
-// Each container sets up and removes only its own tap; whichever of a primary
-// and a service comes up second links the two.
+// The monitor sets this up after the pivot into the container's root, so
+// everything goes through netlink: nftables for the NAT and the filter, and
+// RTM_SETLINK for forwarding (/proc/sys is read-only there). Each container
+// owns its tap and one nftables table and removes only those; the bridge
+// and forwarding are shared and set up idempotently by whoever comes first.
 
 const (
-	// MaxPodServices bounds the services of a pod; ServiceAddress's last
-	// byte and the filter priorities below depend on it.
+	// MaxPodServices bounds the services of a pod: service i is
+	// 198.18.0.<i>.
 	MaxPodServices  = 64
 	maxServicePorts = 16
 
-	// Filter priorities (a lower one runs first), one filter per priority.
-	prioServiceARP    = 10   // + i, on the pod interface: copy ARP to service i
-	prioServicePort   = 100  // + (i-1)*maxServicePorts + k, on the pod interface
-	prioToService     = 10   // + i, on the primary's tap
-	prioFromService   = 1    // on a service's tap: its replies to the primary
-	prioServiceOut    = 2    // + k, on a service's tap: its port k's replies
-	prioServiceOwnARP = 100  // on a service's tap: its ARP
-	prioCatchAll      = 2000 // primary: both ways; service: drop the rest
+	podBridge = "br_urunc"
+	// The services' DNAT chains run before the primary's catch-all: the
+	// first NAT chain that maps a connection wins.
+	prioServiceDNAT = -100
+	prioPrimaryDNAT = -90
 )
 
-var podTapRe = regexp.MustCompile(`^tap(\d+)_urunc$`)
+var (
+	podSubnet = net.IPv4Mask(255, 255, 255, 0)
+	// PrimaryAddress is the primary VM's address on the pod network.
+	PrimaryAddress = net.IPv4(198, 18, 0, 250).To4()
+	podGateway     = net.IPv4(198, 18, 0, 254).To4()
+)
 
 // PodNetwork is one container's part in a pod network: Service is 0 for the
-// primary and i (1..MaxPodServices) for the pod's i-th service, which accepts
-// connections from outside the guest on Ports.
+// primary and i (1..MaxPodServices) for the pod's i-th service, which the
+// pod's address forwards Ports to.
 type PodNetwork struct {
 	Service int
 	Ports   []uint16
 }
 
-// ServiceAddress is the address the primary reaches service i at. The range
-// (198.18.0.0/15, for benchmarking) is not routed anywhere, and the frames
-// never leave the pod.
+// ServiceAddress is service i's address on the pod network (198.18.0.0/15
+// is for benchmarking; it is routed nowhere, and only the pod's namespace
+// knows this /24).
 func ServiceAddress(i int) net.IP {
 	return net.IPv4(198, 18, 0, byte(i)).To4()
 }
 
-func podTapName(i int) string {
-	return strings.ReplaceAll(DefaultTap, "X", strconv.Itoa(i))
+func (n PodNetwork) address() net.IP {
+	if n.Service == 0 {
+		return PrimaryAddress
+	}
+	return ServiceAddress(n.Service)
+}
+
+// mac is the guest's: locally administered, from its address.
+func (n PodNetwork) mac() net.HardwareAddr {
+	return net.HardwareAddr{0x02, 0x75, 0x72, 0x75, 0x00, n.address()[3]}
+}
+
+func (n PodNetwork) tapName() string {
+	return strings.ReplaceAll(DefaultTap, "X", strconv.Itoa(n.Service))
+}
+
+func (n PodNetwork) table() *nftables.Table {
+	return &nftables.Table{Family: nftables.TableFamilyIPv4, Name: "urunc_pod_" + strconv.Itoa(n.Service)}
 }
 
 func (n PodNetwork) validate() error {
@@ -100,8 +124,8 @@ func (n PodNetwork) validate() error {
 	return nil
 }
 
-// NetworkSetup creates the container's tap and its filters, and links it to
-// the primary or the services already running.
+// NetworkSetup puts the container's tap on the pod's bridge and installs
+// its NAT and filter rules.
 func (n PodNetwork) NetworkSetup(uid uint32, gid uint32) (*UnikernelNetworkInfo, error) {
 	if err := n.validate(); err != nil {
 		return nil, err
@@ -110,12 +134,16 @@ func (n PodNetwork) NetworkSetup(uid uint32, gid uint32) (*UnikernelNetworkInfo,
 	if err != nil {
 		return nil, fmt.Errorf("failed to find container interface: %w", err)
 	}
-	ifInfo, err := getInterfaceInfo(eth.Attrs().Name)
+	podIP, err := ipv4Of(eth)
 	if err != nil {
-		return nil, fmt.Errorf("getInterfaceInfo(%s) failed: %w", eth.Attrs().Name, err)
+		return nil, err
+	}
+	br, err := ensurePodBridge(eth)
+	if err != nil {
+		return nil, err
 	}
 
-	name := podTapName(n.Service)
+	name := n.tapName()
 	// A tap left by this container's previous VM, whose monitor exited on
 	// its own, is removed; one a monitor holds belongs to a running VM.
 	if old, err := netlink.LinkByName(name); err == nil {
@@ -126,161 +154,232 @@ func (n PodNetwork) NetworkSetup(uid uint32, gid uint32) (*UnikernelNetworkInfo,
 			return nil, fmt.Errorf("failed to remove the stale %s: %w", name, err)
 		}
 	}
-	tap, err := networkSetup(name, "", eth, false, uid, gid)
+	tap, err := createTapDevice(name, eth.Attrs().MTU, uid, gid)
 	if err != nil {
-		return nil, fmt.Errorf("networkSetup(%s) failed: %w", name, err)
+		return nil, fmt.Errorf("createTapDevice(%s) failed: %w", name, err)
 	}
-	err = n.addFilters(eth, tap, net.ParseIP(ifInfo.IP).To4(), eth.Attrs().HardwareAddr)
+	err = errors.Join(netlink.LinkSetMaster(tap, br), netlink.LinkSetUp(tap), n.setRules(eth.Attrs().Name, podIP))
 	if err != nil {
 		if delErr := netlink.LinkDel(tap); delErr != nil {
 			netlog.Warnf("failed to remove %s after a failed setup: %v", name, delErr)
 		}
+		return nil, fmt.Errorf("pod network: %w", err)
+	}
+	return &UnikernelNetworkInfo{
+		TapDevice: name,
+		EthDevice: Interface{
+			IP:             n.address().String(),
+			DefaultGateway: podGateway.String(),
+			Mask:           net.IP(podSubnet).String(),
+			Interface:      eth.Attrs().Name,
+			MAC:            n.mac().String(),
+			MTU:            eth.Attrs().MTU,
+		},
+	}, nil
+}
+
+// Release removes the container's tap and its table. The bridge stays for
+// the pod's other VMs, until the namespace goes.
+func (n PodNetwork) Release() error {
+	var errs []error
+	link, err := netlink.LinkByName(n.tapName())
+	var notFound netlink.LinkNotFoundError
+	switch {
+	case err == nil:
+		errs = append(errs, netlink.LinkDel(link))
+	case !errors.As(err, &notFound):
+		errs = append(errs, err)
+	}
+	// Adding first makes the delete succeed when there is no table.
+	return errors.Join(append(errs, nftFlush(func(c *nftables.Conn) {
+		c.AddTable(n.table())
+		c.DelTable(n.table())
+	}))...)
+}
+
+func ipv4Of(link netlink.Link) (net.IP, error) {
+	addrs, err := retryDump(func() ([]netlink.Addr, error) { return netlink.AddrList(link, netlink.FAMILY_V4) })
+	if err != nil {
 		return nil, err
 	}
-	return &UnikernelNetworkInfo{TapDevice: name, EthDevice: ifInfo}, nil
+	for _, a := range addrs {
+		if ip := a.IP.To4(); ip != nil && !ip.IsLoopback() {
+			return ip, nil
+		}
+	}
+	return nil, fmt.Errorf("pod network: %s has no IPv4 address", link.Attrs().Name)
 }
 
-// Release removes the container's tap, and the filters on it with it. The
-// other containers' filters that point at it drop those frames until the
-// container's next VM replaces them.
-func (n PodNetwork) Release() error {
-	link, err := netlink.LinkByName(podTapName(n.Service))
+// ensurePodBridge creates the pod's bridge, or takes the one another
+// container created, and turns forwarding on for it and the pod interface.
+// Its MAC is fixed: a bridge that takes its lowest port's would change the
+// guests' gateway under them as taps come and go.
+func ensurePodBridge(eth netlink.Link) (netlink.Link, error) {
+	attrs := netlink.NewLinkAttrs()
+	attrs.Name = podBridge
+	attrs.MTU = eth.Attrs().MTU
+	attrs.HardwareAddr = net.HardwareAddr{0x02, 0x75, 0x72, 0x75, 0x00, podGateway[3]}
+	if err := netlink.LinkAdd(&netlink.Bridge{LinkAttrs: attrs}); err != nil && !errors.Is(err, unix.EEXIST) {
+		return nil, fmt.Errorf("failed to create %s: %w", podBridge, err)
+	}
+	br, err := netlink.LinkByName(podBridge)
 	if err != nil {
-		var notFound netlink.LinkNotFoundError
-		if errors.As(err, &notFound) {
-			return nil
-		}
-		return err
+		return nil, err
 	}
-	return netlink.LinkDel(link)
-}
-
-func (n PodNetwork) addFilters(eth, tap netlink.Link, podIP net.IP, podMAC net.HardwareAddr) error {
-	for _, l := range []netlink.Link{eth, tap} {
-		if err := ensureIngressQdisc(l); err != nil {
-			return fmt.Errorf("failed to add an ingress qdisc to %s: %w", l.Attrs().Name, err)
-		}
-	}
-	if n.Service == 0 {
-		err := errors.Join(
-			setFilter(&netlink.MatchAll{FilterAttrs: ingressAttrs(eth, prioCatchAll, unix.ETH_P_ALL), Actions: redirectTo(tap)}),
-			setFilter(&netlink.MatchAll{FilterAttrs: ingressAttrs(tap, prioCatchAll, unix.ETH_P_ALL), Actions: redirectTo(eth)}),
-		)
-		if err != nil {
-			return err
-		}
-		links, err := netlink.LinkList()
-		if err != nil {
-			return err
-		}
-		for _, l := range links {
-			m := podTapRe.FindStringSubmatch(l.Attrs().Name)
-			if m == nil {
-				continue
-			}
-			if i, _ := strconv.Atoi(m[1]); i >= 1 && i <= MaxPodServices {
-				if err := linkService(tap, l, i, podIP, podMAC); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}
-
-	i := n.Service
-	errs := []error{
-		setFilter(&netlink.MatchAll{FilterAttrs: ingressAttrs(tap, prioServiceOwnARP, unix.ETH_P_ARP), Actions: redirectTo(eth)}),
-		setFilter(&netlink.MatchAll{FilterAttrs: ingressAttrs(tap, prioCatchAll, unix.ETH_P_ALL), Actions: []netlink.Action{
-			&netlink.GenericAction{ActionAttrs: netlink.ActionAttrs{Action: netlink.TC_ACT_SHOT}},
-		}}),
-		// The gateway's ARP replies reach the primary; the service needs them too.
-		setFilter(&netlink.MatchAll{FilterAttrs: ingressAttrs(eth, prioServiceARP+i, unix.ETH_P_ARP), Actions: []netlink.Action{
-			&netlink.MirredAction{
-				ActionAttrs:  netlink.ActionAttrs{Action: netlink.TC_ACT_UNSPEC}, // go on to the next filter
-				MirredAction: netlink.TCA_EGRESS_MIRROR,
-				Ifindex:      tap.Attrs().Index,
-			},
-		}}),
-	}
-	for k, p := range n.Ports {
-		errs = append(errs,
-			setFilter(&netlink.U32{FilterAttrs: ingressAttrs(tap, prioServiceOut+k, unix.ETH_P_IP),
-				Sel: u32Sel(keyTCP, nl.TcU32Key{Mask: 0xffff0000, Val: uint32(p) << 16, Off: 20}), Actions: redirectTo(eth)}),
-			setFilter(&netlink.U32{FilterAttrs: ingressAttrs(eth, prioServicePort+(i-1)*maxServicePorts+k, unix.ETH_P_IP),
-				Sel: u32Sel(keyTCP, nl.TcU32Key{Mask: 0x0000ffff, Val: uint32(p), Off: 20}), Actions: redirectTo(tap)}),
-		)
-	}
-	if err := errors.Join(errs...); err != nil {
-		return err
-	}
-	primary, err := netlink.LinkByName(podTapName(0))
-	if err != nil {
-		return nil // the primary links the service when it comes up
-	}
-	return linkService(primary, tap, i, podIP, podMAC)
-}
-
-// linkService lets the primary reach service i at ServiceAddress(i). Both
-// guests have the pod's address, so the frames each way get the service
-// address as their source and the pod's as their destination.
-func linkService(primary, service netlink.Link, i int, podIP net.IP, podMAC net.HardwareAddr) error {
-	addr := ServiceAddress(i)
-	sel := u32Sel(nl.TcU32Key{Mask: 0xffffffff, Val: binary.BigEndian.Uint32(addr), Off: 16})
-	rewrite := func(to netlink.Link) []netlink.Action {
-		return append([]netlink.Action{
-			&netlink.PeditAction{ActionAttrs: netlink.ActionAttrs{Action: netlink.TC_ACT_PIPE}, SrcIP: addr, DstIP: podIP, DstMacAddr: podMAC},
-			&netlink.CsumAction{ActionAttrs: netlink.ActionAttrs{Action: netlink.TC_ACT_PIPE},
-				UpdateFlags: netlink.TCA_CSUM_UPDATE_FLAG_IPV4HDR | netlink.TCA_CSUM_UPDATE_FLAG_ICMP |
-					netlink.TCA_CSUM_UPDATE_FLAG_TCP | netlink.TCA_CSUM_UPDATE_FLAG_UDP},
-		}, redirectTo(to)...)
-	}
-	return errors.Join(
-		setFilter(&netlink.U32{FilterAttrs: ingressAttrs(primary, prioToService+i, unix.ETH_P_IP), Sel: sel, Actions: rewrite(service)}),
-		setFilter(&netlink.U32{FilterAttrs: ingressAttrs(service, prioFromService, unix.ETH_P_IP), Sel: sel, Actions: rewrite(primary)}),
+	err = errors.Join(
+		netlink.AddrReplace(br, &netlink.Addr{IPNet: &net.IPNet{IP: podGateway, Mask: podSubnet}}),
+		netlink.LinkSetUp(br),
+		setForwarding(br),
+		setForwarding(eth),
 	)
-}
-
-// keyTCP matches an IPv4 packet carrying TCP. The port keys after it assume
-// a header without options, as Linux sends.
-var keyTCP = nl.TcU32Key{Mask: 0x00ff0000, Val: unix.IPPROTO_TCP << 16, Off: 8}
-
-func u32Sel(keys ...nl.TcU32Key) *nl.TcU32Sel {
-	return &nl.TcU32Sel{Flags: nl.TC_U32_TERMINAL, Keys: keys}
-}
-
-func ingressAttrs(link netlink.Link, prio int, proto uint16) netlink.FilterAttrs {
-	return netlink.FilterAttrs{
-		LinkIndex: link.Attrs().Index,
-		Parent:    netlink.MakeHandle(0xffff, 0),
-		Priority:  uint16(prio), //nolint:gosec // at most prioCatchAll
-		Protocol:  proto,
+	if err != nil {
+		return nil, fmt.Errorf("failed to set up %s: %w", podBridge, err)
 	}
+	return br, nil
 }
 
-func redirectTo(link netlink.Link) []netlink.Action {
-	return []netlink.Action{&netlink.MirredAction{
-		ActionAttrs:  netlink.ActionAttrs{Action: netlink.TC_ACT_STOLEN},
-		MirredAction: netlink.TCA_EGRESS_REDIR,
-		Ifindex:      link.Attrs().Index,
-	}}
-}
-
-// setFilter makes f the only filter at its priority, so that a container's
-// next VM replaces what its previous one left (a tap that is gone, or one
-// that came back with a new index).
-func setFilter(f netlink.Filter) error {
-	if err := netlink.FilterDel(f); err != nil && !errors.Is(err, unix.ENOENT) && !errors.Is(err, unix.EINVAL) {
-		return fmt.Errorf("failed to remove the filter at priority %d: %w", f.Attrs().Priority, err)
-	}
-	if err := netlink.FilterAdd(f); err != nil {
-		return fmt.Errorf("failed to add a %s filter at priority %d: %w", f.Type(), f.Attrs().Priority, err)
+// setForwarding turns IPv4 forwarding on for link, as
+// net.ipv4.conf.<link>.forwarding=1 does, through RTM_SETLINK: the kernel
+// forwards what arrives on an interface that has it on.
+func setForwarding(link netlink.Link) error {
+	const ipv4DevconfForwarding = 1 // IPV4_DEVCONF_FORWARDING (the index is 1-based)
+	req := nl.NewNetlinkRequest(unix.RTM_SETLINK, unix.NLM_F_ACK)
+	msg := nl.NewIfInfomsg(unix.AF_UNSPEC)
+	msg.Index = int32(link.Attrs().Index) //nolint:gosec // an ifindex
+	req.AddData(msg)
+	af := nl.NewRtAttr(unix.IFLA_AF_SPEC, nil)
+	conf := af.AddRtAttr(unix.AF_INET, nil).AddRtAttr(unix.IFLA_INET_CONF, nil)
+	conf.AddRtAttr(ipv4DevconfForwarding, nl.Uint32Attr(1))
+	req.AddData(af)
+	if _, err := req.Execute(unix.NETLINK_ROUTE, 0); err != nil {
+		return fmt.Errorf("failed to turn forwarding on for %s: %w", link.Attrs().Name, err)
 	}
 	return nil
 }
 
-func ensureIngressQdisc(link netlink.Link) error {
-	if err := addIngressQdisc(link); err != nil && !errors.Is(err, unix.EEXIST) {
+// nftFlush sends the batch fill builds to nftables in the calling thread's
+// network namespace. The connection enters the namespace by its fd when it
+// flushes, so the fd stays open until then.
+func nftFlush(fill func(c *nftables.Conn)) error {
+	ns, err := netns.Get()
+	if err != nil {
 		return err
 	}
-	return nil
+	defer ns.Close()
+	c, err := nftables.New(nftables.WithNetNSFd(int(ns)))
+	if err != nil {
+		return err
+	}
+	fill(c)
+	return c.Flush()
+}
+
+// setRules replaces the container's table with its rules, in one batch.
+func (n PodNetwork) setRules(eth string, podIP net.IP) error {
+	return nftFlush(func(c *nftables.Conn) { n.addRules(c, eth, podIP) })
+}
+
+func (n PodNetwork) addRules(c *nftables.Conn, eth string, podIP net.IP) {
+	t := n.table()
+	c.AddTable(t)
+	c.DelTable(t)
+	c.AddTable(t)
+	addr := n.address()
+	toPod := slices.Concat(ifIs(expr.MetaKeyIIFNAME, eth), ipIs(ipDst, podIP))
+
+	if n.Service == 0 {
+		pre := c.AddChain(&nftables.Chain{Name: "prerouting", Table: t, Type: nftables.ChainTypeNAT,
+			Hooknum: nftables.ChainHookPrerouting, Priority: nftables.ChainPriorityRef(prioPrimaryDNAT)})
+		c.AddRule(&nftables.Rule{Table: t, Chain: pre, Exprs: slices.Concat(toPod, natTo(expr.NATTypeDestNAT, addr))})
+		post := c.AddChain(&nftables.Chain{Name: "postrouting", Table: t, Type: nftables.ChainTypeNAT,
+			Hooknum: nftables.ChainHookPostrouting, Priority: nftables.ChainPriorityNATSource})
+		c.AddRule(&nftables.Rule{Table: t, Chain: post, Exprs: slices.Concat(
+			ifIs(expr.MetaKeyOIFNAME, eth), ipIs(ipSrc, addr), natTo(expr.NATTypeSourceNAT, podIP))})
+		addForward(c, t, slices.Concat(ifIs(expr.MetaKeyIIFNAME, eth), ipIs(ipDst, addr), unmapped()))
+		return
+	}
+
+	pre := c.AddChain(&nftables.Chain{Name: "prerouting", Table: t, Type: nftables.ChainTypeNAT,
+		Hooknum: nftables.ChainHookPrerouting, Priority: nftables.ChainPriorityRef(prioServiceDNAT)})
+	for _, proto := range []byte{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
+		for _, p := range n.Ports {
+			c.AddRule(&nftables.Rule{Table: t, Chain: pre, Exprs: slices.Concat(toPod, []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(p)},
+			}, natTo(expr.NATTypeDestNAT, addr))})
+		}
+	}
+	// Out of the pod a service may only answer: its new connections would
+	// leave with an address nothing routes back, and are dropped.
+	addForward(c, t,
+		slices.Concat(ifIs(expr.MetaKeyOIFNAME, eth), ipIs(ipSrc, addr), ctBits(expr.CtKeySTATE, ctNew, false)),
+		slices.Concat(ifIs(expr.MetaKeyIIFNAME, eth), ipIs(ipDst, addr), unmapped()))
+}
+
+// addForward adds a forward chain that drops what each match matches.
+func addForward(c *nftables.Conn, t *nftables.Table, matches ...[]expr.Any) {
+	fwd := c.AddChain(&nftables.Chain{Name: "forward", Table: t, Type: nftables.ChainTypeFilter,
+		Hooknum: nftables.ChainHookForward, Priority: nftables.ChainPriorityFilter})
+	for _, m := range matches {
+		c.AddRule(&nftables.Rule{Table: t, Chain: fwd, Exprs: append(m, &expr.Verdict{Kind: expr.VerdictDrop})})
+	}
+}
+
+// ctNew is every state but an answer to a connection seen before.
+const ctNew = expr.CtStateBitNEW | expr.CtStateBitINVALID | expr.CtStateBitUNTRACKED
+
+// ctDstNAT is IPS_DST_NAT: the connection was DNATed.
+const ctDstNAT = 1 << 5
+
+// unmapped matches a new connection that reached a VM's own address from
+// outside the pod, not through a DNAT of the pod's address: nothing routes
+// the pod network to the pod, and nothing should.
+func unmapped() []expr.Any {
+	return slices.Concat(ctBits(expr.CtKeySTATE, ctNew, false), ctBits(expr.CtKeySTATUS, ctDstNAT, true))
+}
+
+// ctBits matches a conntrack key having one of bits set, or, with none,
+// none of them.
+func ctBits(key expr.CtKey, bits uint32, none bool) []expr.Any {
+	op := expr.CmpOpNeq
+	if none {
+		op = expr.CmpOpEq
+	}
+	return []expr.Any{
+		&expr.Ct{Key: key, Register: 1},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: binaryutil.NativeEndian.PutUint32(bits), Xor: make([]byte, 4)},
+		&expr.Cmp{Op: op, Register: 1, Data: make([]byte, 4)},
+	}
+}
+
+// Offsets of the IPv4 source and destination addresses.
+const (
+	ipSrc = 12
+	ipDst = 16
+)
+
+// ifIs matches the input or output interface's name.
+func ifIs(key expr.MetaKey, name string) []expr.Any {
+	b := make([]byte, unix.IFNAMSIZ)
+	copy(b, name)
+	return []expr.Any{
+		&expr.Meta{Key: key, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: b},
+	}
+}
+
+func ipIs(offset uint32, ip net.IP) []expr.Any {
+	return []expr.Any{
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: offset, Len: 4},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ip.To4()},
+	}
+}
+
+func natTo(kind expr.NATType, to net.IP) []expr.Any {
+	return []expr.Any{
+		&expr.Immediate{Register: 1, Data: to.To4()},
+		&expr.NAT{Type: kind, Family: unix.NFPROTO_IPV4, RegAddrMin: 1},
+	}
 }
