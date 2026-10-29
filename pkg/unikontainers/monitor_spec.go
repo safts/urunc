@@ -57,7 +57,7 @@ func (u *Unikontainer) writeMonitorSpec(rootfsParams types.RootfsParams, monRes 
 	mSpec := u.buildMonitorSpec(rootfsParams, monRes)
 
 	mSpec.NetworkType = u.getNetworkType()
-	podNet, err := podNetwork(u.Spec.Annotations)
+	podNet, err := u.podNet()
 	if err != nil {
 		return err
 	}

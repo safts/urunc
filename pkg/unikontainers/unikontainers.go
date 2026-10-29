@@ -792,7 +792,7 @@ func (u *Unikontainer) Exec(metrics m.Writer) error {
 	}
 
 	// handle network
-	podNet, err := podNetwork(u.Spec.Annotations)
+	podNet, err := u.podNet()
 	if err != nil {
 		return err
 	}
@@ -1292,7 +1292,7 @@ func (u *Unikontainer) Kill() error {
 	}
 
 	// In a pod network the other VMs of the pod keep theirs.
-	if podNet, perr := podNetwork(u.Spec.Annotations); perr == nil && podNet != nil {
+	if podNet, perr := u.podNet(); perr == nil && podNet != nil {
 		err = podNet.Release()
 	} else {
 		err = network.CleanupAllUruncTaps()
@@ -1385,6 +1385,12 @@ func (u *Unikontainer) releaseSandboxNet() error {
 		defer func() { _ = unix.Close(fd) }()
 		if err := unix.Setns(fd, unix.CLONE_NEWNET); err != nil {
 			errCh <- fmt.Errorf("error joining namespace: %w", err)
+			return
+		}
+		// In a pod network only the container's own tap: a sibling's that
+		// its booting VM has not opened yet has no carrier either.
+		if podNet, perr := u.podNet(); perr == nil && podNet != nil {
+			errCh <- podNet.Release()
 			return
 		}
 		errCh <- network.ReclaimStaleUruncTaps()

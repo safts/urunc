@@ -724,3 +724,97 @@ func TestPodNetworkRejectsBadParts(t *testing.T) {
 		require.Error(t, err, "%+v", n)
 	}
 }
+
+// A container's old instance is deleted after its new one set up: the old
+// one's release must leave the new one's tap and rules alone (they share
+// the tap's name), and the new one's release removes them.
+func TestPodNetworkReleaseSparesANewerInstance(t *testing.T) {
+	tp := newTestPod(t)
+	old := PodNetwork{Service: 1, Ports: []uint16{5432}, Owner: "old"}
+	info, err := tp.setup(t, old)
+	require.NoError(t, err)
+	_, stop := tp.boot(t, info)
+	stop()
+	cur := old
+	cur.Owner = "new"
+	info, err = tp.setup(t, cur)
+	require.NoError(t, err)
+	inNs(t, tp.pod, func() { require.NoError(t, old.Release()) })
+	g, stop := tp.boot(t, info)
+	serve(t, g, 5432, "new")
+	requireReply(t, tp.host, "10.88.0.2:5432", "new")
+	stop()
+	inNs(t, tp.pod, func() {
+		require.NoError(t, cur.Release())
+		_, err := netlink.LinkByName("tap1_urunc")
+		require.Error(t, err, "the new instance's release left its tap")
+	})
+}
+
+// A sibling's tap that no monitor holds yet (its VM is still booting) is
+// not touched by another container's release.
+func TestPodNetworkReleaseSparesAnUnopenedSibling(t *testing.T) {
+	tp := newTestPod(t)
+	_, err := tp.setup(t, PodNetwork{Owner: "p"})
+	require.NoError(t, err)
+	_, err = tp.setup(t, PodNetwork{Service: 1, Owner: "s"})
+	require.NoError(t, err)
+	inNs(t, tp.pod, func() {
+		require.NoError(t, PodNetwork{Service: 1, Owner: "s"}.Release())
+		_, err := netlink.LinkByName("tap0_urunc")
+		require.NoError(t, err, "the primary's unopened tap was removed")
+	})
+}
+
+// A service that sends as the primary is dropped at its own bridge port:
+// it gets no egress by spoofing.
+func TestPodNetworkServiceCannotSpoofThePrimary(t *testing.T) {
+	p := bootPod(t, newTestPod(t), 0, 1)
+	serve(t, p.host, 9000, "host")
+	inNs(t, p.guests[1], func() {
+		g0, err := netlink.LinkByName("g0")
+		require.NoError(t, err)
+		require.NoError(t, netlink.AddrAdd(g0, &netlink.Addr{IPNet: &net.IPNet{IP: PrimaryAddress, Mask: net.CIDRMask(32, 32)}}))
+	})
+	inNs(t, p.guests[1], func() {
+		d := net.Dialer{Timeout: 2 * time.Second, LocalAddr: &net.TCPAddr{IP: PrimaryAddress}}
+		c, err := d.Dial("tcp4", "10.88.0.1:9000")
+		if err == nil {
+			c.Close()
+		}
+		require.Error(t, err, "a service reached out of the pod as the primary")
+	})
+	requireReply(t, p.guests[0], "10.88.0.1:9000", "host")
+}
+
+// A UDP flow to a service's port that started before the service was up
+// reaches the service once it is: its stale conntrack entry is dropped.
+func TestPodNetworkUDPFlowMovesToTheService(t *testing.T) {
+	tp := newTestPod(t)
+	info, err := tp.setup(t, PodNetwork{})
+	require.NoError(t, err)
+	tp.boot(t, info)
+	// Unconnected, so the primary's ICMP answer to the first datagram is
+	// not reported on the next write.
+	var c *net.UDPConn
+	inNs(t, tp.host, func() {
+		c, err = net.ListenUDP("udp4", &net.UDPAddr{Port: 40000})
+		require.NoError(t, err)
+	})
+	defer c.Close()
+	to := &net.UDPAddr{IP: net.ParseIP("10.88.0.2"), Port: 5432}
+	_, err = c.WriteTo([]byte("early"), to) // to the primary, which does not answer
+	require.NoError(t, err)
+	time.Sleep(200 * time.Millisecond)
+	info, err = tp.setup(t, PodNetwork{Service: 1, Ports: []uint16{5432}})
+	require.NoError(t, err)
+	g, _ := tp.boot(t, info)
+	serveUDP(t, g, 5432, "service")
+	_, err = c.WriteTo([]byte("?"), to)
+	require.NoError(t, err)
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	b := make([]byte, 64)
+	n, _, err := c.ReadFrom(b)
+	require.NoError(t, err)
+	require.Equal(t, "service", string(b[:n]))
+}

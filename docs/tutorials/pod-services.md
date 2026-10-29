@@ -66,16 +66,27 @@ primary):
   it (at a later priority, so the services' ports win) and SNATs its
   traffic out of the pod;
 - both drop new connections from outside the pod to their own address
-  that were not DNATed.
+  that were not DNATed;
+- a bridge-family table of the same name pins the container's bridge port
+  to its guest's MAC and address (IPv4 source and ARP sender), so no guest
+  can send as another, for example a service as the primary to get egress.
 
-Each container replaces only its own table, in one atomic batch, and on
-stop removes only its tap and its table. Everything goes through netlink
+When a service's rules go in, the conntrack entries of UDP flows to the
+pod's address on its ports are dropped: a flow that began before the
+service was up would otherwise stay mapped to the primary.
+
+Each container replaces only its own tables, in one atomic batch. Its tap
+carries the container's ID as its alias, and on delete the container
+removes its tap and tables only if the tap is still its own and no monitor
+holds it: a newer instance of the same container, or a sibling whose VM is
+still booting, keeps theirs. Everything goes through netlink
 (nftables, and `RTM_SETLINK` for forwarding), because the monitor sets the
 network up after it pivots into the container's root, where there is no
 `iptables` and `/proc/sys` is read-only.
 
-The kernel needs the bridge, `nf_tables`, `nft_nat`, `nft_chain_nat`,
-`nf_conntrack` and `nft_ct`.
+The kernel needs the bridge, `nf_tables` with the IPv4 and bridge
+families, `nft_nat`, `nft_chain_nat`, `nf_conntrack`, `nft_ct` and
+`nf_conntrack_netlink`.
 
 ## Limits
 
@@ -83,3 +94,7 @@ The kernel needs the bridge, `nf_tables`, `nft_nat`, `nft_chain_nat`,
 - The primary reaching itself or a service through the pod's address
   (hairpin) is not supported: use the `198.18.0.x` addresses.
 - Services have no egress.
+- The pod's address is not the primary guest's own: an application that
+  binds to the pod's IP (for example from the downward API) fails to bind;
+  bind to `0.0.0.0` instead.
+- IPv6 to the pod's address reaches nothing.

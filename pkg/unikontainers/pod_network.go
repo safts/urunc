@@ -67,3 +67,12 @@ func podNetwork(annotations map[string]string) (*network.PodNetwork, error) {
 	}
 	return pn, nil
 }
+
+// podNet is podNetwork for u's container, owned by its ID.
+func (u *Unikontainer) podNet() (*network.PodNetwork, error) {
+	pn, err := podNetwork(u.Spec.Annotations)
+	if pn != nil && u.State != nil {
+		pn.Owner = u.State.ID
+	}
+	return pn, err
+}

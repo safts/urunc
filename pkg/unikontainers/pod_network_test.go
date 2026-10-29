@@ -71,7 +71,7 @@ func TestWriteMonitorSpecCarriesThePodNetwork(t *testing.T) {
 
 	require.NoError(t, u.writeMonitorSpec(rootfsParams, monitorResources{}))
 	got := readMonitorSpecFile(t, monRootfs)
-	assert.Equal(t, &network.PodNetwork{Service: 1, Ports: []uint16{5432}}, got.PodNet)
+	assert.Equal(t, &network.PodNetwork{Service: 1, Ports: []uint16{5432}, Owner: "test-container"}, got.PodNet)
 
 	u.Spec.Annotations[annotPodServices] = "svc-db:5432,svc-db:5433"
 	assert.Error(t, u.writeMonitorSpec(rootfsParams, monitorResources{}))

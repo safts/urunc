@@ -74,10 +74,13 @@ var (
 
 // PodNetwork is one container's part in a pod network: Service is 0 for the
 // primary and i (1..MaxPodServices) for the pod's i-th service, which the
-// pod's address forwards Ports to.
+// pod's address forwards Ports to. Owner is the container's ID, which its tap
+// carries as its alias: a container's instances share their tap's name, and
+// an old instance's release must not remove its successor's.
 type PodNetwork struct {
 	Service int
 	Ports   []uint16
+	Owner   string
 }
 
 // ServiceAddress is service i's address on the pod network (198.18.0.0/15
@@ -105,6 +108,12 @@ func (n PodNetwork) tapName() string {
 
 func (n PodNetwork) table() *nftables.Table {
 	return &nftables.Table{Family: nftables.TableFamilyIPv4, Name: "urunc_pod_" + strconv.Itoa(n.Service)}
+}
+
+// portTable pins the container's bridge port to its guest's MAC and
+// address, so that no guest sends as another.
+func (n PodNetwork) portTable() *nftables.Table {
+	return &nftables.Table{Family: nftables.TableFamilyBridge, Name: "urunc_pod_" + strconv.Itoa(n.Service)}
 }
 
 func (n PodNetwork) validate() error {
@@ -158,7 +167,11 @@ func (n PodNetwork) NetworkSetup(uid uint32, gid uint32) (*UnikernelNetworkInfo,
 	if err != nil {
 		return nil, fmt.Errorf("createTapDevice(%s) failed: %w", name, err)
 	}
-	err = errors.Join(netlink.LinkSetMaster(tap, br), netlink.LinkSetUp(tap), n.setRules(eth.Attrs().Name, podIP))
+	err = errors.Join(netlink.LinkSetAlias(tap, n.Owner), netlink.LinkSetMaster(tap, br), netlink.LinkSetUp(tap),
+		n.setRules(eth.Attrs().Name, podIP))
+	if err == nil && n.Service > 0 {
+		err = forgetFlows(podIP, n.Ports)
+	}
 	if err != nil {
 		if delErr := netlink.LinkDel(tap); delErr != nil {
 			netlog.Warnf("failed to remove %s after a failed setup: %v", name, delErr)
@@ -178,23 +191,53 @@ func (n PodNetwork) NetworkSetup(uid uint32, gid uint32) (*UnikernelNetworkInfo,
 	}, nil
 }
 
-// Release removes the container's tap and its table. The bridge stays for
-// the pod's other VMs, until the namespace goes.
+// Release removes the container's tap and its tables, once its VM is gone:
+// it leaves a tap a monitor holds, and one another instance of the
+// container (another Owner) set up since. The bridge stays for the pod's
+// other VMs, until the namespace goes. An empty Owner releases whatever has
+// the container's tap name.
 func (n PodNetwork) Release() error {
-	var errs []error
 	link, err := netlink.LinkByName(n.tapName())
 	var notFound netlink.LinkNotFoundError
 	switch {
 	case err == nil:
-		errs = append(errs, netlink.LinkDel(link))
+		if tapInUse(link) || (n.Owner != "" && link.Attrs().Alias != n.Owner) {
+			return nil
+		}
+		if err := netlink.LinkDel(link); err != nil {
+			return err
+		}
 	case !errors.As(err, &notFound):
-		errs = append(errs, err)
+		return err
 	}
 	// Adding first makes the delete succeed when there is no table.
-	return errors.Join(append(errs, nftFlush(func(c *nftables.Conn) {
-		c.AddTable(n.table())
-		c.DelTable(n.table())
-	}))...)
+	return nftFlush(func(c *nftables.Conn) {
+		for _, t := range []*nftables.Table{n.table(), n.portTable()} {
+			c.AddTable(t)
+			c.DelTable(t)
+		}
+	})
+}
+
+// forgetFlows drops the conntrack entries of UDP flows to the pod's address
+// on ports: one that started before the service's rules went in stays mapped
+// to the primary, or to the namespace itself, for as long as its client
+// keeps sending.
+func forgetFlows(podIP net.IP, ports []uint16) error {
+	var filters []netlink.CustomConntrackFilter
+	for _, p := range ports {
+		f := &netlink.ConntrackFilter{}
+		if err := errors.Join(f.AddProtocol(unix.IPPROTO_UDP), f.AddIP(netlink.ConntrackOrigDstIP, podIP),
+			f.AddPort(netlink.ConntrackOrigDstPort, p)); err != nil {
+			return err
+		}
+		filters = append(filters, f)
+	}
+	if len(filters) == 0 {
+		return nil
+	}
+	_, err := netlink.ConntrackDeleteFilters(netlink.ConntrackTable, unix.AF_INET, filters...)
+	return err
 }
 
 func ipv4Of(link netlink.Link) (net.IP, error) {
@@ -280,6 +323,7 @@ func (n PodNetwork) setRules(eth string, podIP net.IP) error {
 }
 
 func (n PodNetwork) addRules(c *nftables.Conn, eth string, podIP net.IP) {
+	n.addPortRules(c)
 	t := n.table()
 	c.AddTable(t)
 	c.DelTable(t)
@@ -316,6 +360,39 @@ func (n PodNetwork) addRules(c *nftables.Conn, eth string, podIP net.IP) {
 	addForward(c, t,
 		slices.Concat(ifIs(expr.MetaKeyOIFNAME, eth), ipIs(ipSrc, addr), ctBits(expr.CtKeySTATE, ctNew, false)),
 		slices.Concat(ifIs(expr.MetaKeyIIFNAME, eth), ipIs(ipDst, addr), unmapped()))
+}
+
+// addPortRules drops what arrives on the container's bridge port from
+// another MAC, or as IPv4 or ARP from another address.
+func (n PodNetwork) addPortRules(c *nftables.Conn) {
+	t := n.portTable()
+	c.AddTable(t)
+	c.DelTable(t)
+	c.AddTable(t)
+	pre := c.AddChain(&nftables.Chain{Name: "prerouting", Table: t, Type: nftables.ChainTypeFilter,
+		Hooknum: nftables.ChainHookPrerouting, Priority: nftables.ChainPriorityRef(-300)})
+	port := ifIs(expr.MetaKeyIIFNAME, n.tapName())
+	isEther := func(etherType uint16) []expr.Any {
+		return []expr.Any{
+			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseLLHeader, Offset: 12, Len: 2},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(etherType)},
+		}
+	}
+	not := func(base expr.PayloadBase, offset, length uint32, want []byte) []expr.Any {
+		return []expr.Any{
+			&expr.Payload{DestRegister: 1, Base: base, Offset: offset, Len: length},
+			&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: want},
+		}
+	}
+	drop := &expr.Verdict{Kind: expr.VerdictDrop}
+	for _, m := range [][]expr.Any{
+		slices.Concat(port, not(expr.PayloadBaseLLHeader, 6, 6, n.mac())),
+		slices.Concat(port, isEther(unix.ETH_P_IP), not(expr.PayloadBaseNetworkHeader, ipSrc, 4, n.address())),
+		// The ARP sender's protocol address, in an Ethernet/IPv4 request or reply.
+		slices.Concat(port, isEther(unix.ETH_P_ARP), not(expr.PayloadBaseNetworkHeader, 14, 4, n.address())),
+	} {
+		c.AddRule(&nftables.Rule{Table: t, Chain: pre, Exprs: append(m, drop)})
+	}
 }
 
 // addForward adds a forward chain that drops what each match matches.
