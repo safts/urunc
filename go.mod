@@ -14,7 +14,6 @@ require (
 	github.com/cyphar/filepath-securejoin v0.7.0
 	github.com/elastic/go-seccomp-bpf v1.6.0
 	github.com/hashicorp/go-version v1.9.0
-	github.com/jackpal/gateway v1.2.0
 	github.com/moby/sys/mountinfo v0.7.2
 	github.com/moby/sys/user v0.4.1
 	github.com/moby/sys/userns v0.2.1
