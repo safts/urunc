@@ -86,7 +86,7 @@ func runMonitor(metrics m.Writer, ms monitorSpec) error {
 		return err
 	}
 
-	netArgs, err := SetupNet(ms.NetworkType, ms.User.UID, ms.User.GID)
+	netArgs, err := SetupNet(ms.NetworkType, ms.PodNet, ms.User.UID, ms.User.GID)
 	if err != nil {
 		return fmt.Errorf("failed to setup network: %w", err)
 	}

@@ -92,3 +92,61 @@ func TestReleaseSandboxNetWithoutNamespace(t *testing.T) {
 	}}}}
 	require.NoError(t, u.releaseSandboxNet())
 }
+
+// In a pod network, a container's Delete releases its own tap and nothing
+// else, even when every tap is unheld: a sibling's tap that its booting VM
+// has not opened yet must survive.
+func TestReleaseSandboxNetInAPodNetwork(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to create network namespaces and tap devices")
+	}
+	if _, err := os.Stat("/dev/net/tun"); err != nil {
+		t.Skip("needs /dev/net/tun")
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	orig, err := netns.Get()
+	require.NoError(t, err)
+	defer orig.Close()
+
+	name := fmt.Sprintf("urunc-test-pod-%d", os.Getpid())
+	ns, err := netns.NewNamed(name)
+	require.NoError(t, err)
+	defer func() { _ = netns.DeleteNamed(name) }()
+	defer ns.Close()
+
+	attrs := netlink.NewLinkAttrs()
+	attrs.Name = "eth0"
+	require.NoError(t, netlink.LinkAdd(&netlink.Dummy{LinkAttrs: attrs}))
+	eth, err := netlink.LinkByName("eth0")
+	require.NoError(t, err)
+	require.NoError(t, netlink.LinkSetUp(eth))
+	addr, err := netlink.ParseAddr("10.88.0.2/24")
+	require.NoError(t, err)
+	require.NoError(t, netlink.AddrAdd(eth, addr))
+	require.NoError(t, netlink.RouteAdd(&netlink.Route{LinkIndex: eth.Attrs().Index, Gw: net.ParseIP("10.88.0.1")}))
+	_, err = network.PodNetwork{Owner: "main-id"}.NetworkSetup(0, 0)
+	require.NoError(t, err)
+	_, err = network.PodNetwork{Service: 1, Ports: []uint16{5432}, Owner: "svc-id"}.NetworkSetup(0, 0)
+	require.NoError(t, err)
+	require.NoError(t, netns.Set(orig))
+
+	u := &Unikontainer{
+		State: &specs.State{ID: "svc-id"},
+		Spec: &specs.Spec{
+			Annotations: map[string]string{annotPodServices: "svc-db:5432", annotCRICntrName: "svc-db"},
+			Linux: &specs.Linux{Namespaces: []specs.LinuxNamespace{
+				{Type: specs.NetworkNamespace, Path: filepath.Join("/var/run/netns", name)},
+			}},
+		},
+	}
+	require.NoError(t, u.releaseSandboxNet())
+
+	require.NoError(t, netns.Set(ns))
+	defer func() { require.NoError(t, netns.Set(orig)) }()
+	_, err = netlink.LinkByName("tap1_urunc")
+	require.Error(t, err, "the service's own tap is still in the namespace")
+	_, err = netlink.LinkByName("tap0_urunc")
+	require.NoError(t, err, "the primary's unopened tap was removed")
+}

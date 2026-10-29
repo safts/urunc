@@ -24,6 +24,7 @@ import (
 	"github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/opencontainers/runtime-spec/specs-go"
 
+	"github.com/urunc-dev/urunc/pkg/network"
 	"github.com/urunc-dev/urunc/pkg/unikontainers/types"
 )
 
@@ -42,6 +43,7 @@ type monitorSpec struct {
 	ExecArgs      types.ExecArgs        `json:"execArgs"`
 	GuestParams   types.UnikernelParams `json:"guestParams"`
 	NetworkType   string                `json:"networkType"`
+	PodNet        *network.PodNetwork   `json:"podNet,omitempty"`
 	DNSServer     string                `json:"dnsServer,omitempty"`
 	User          specs.User            `json:"user"`
 	PreStartCmd   []string              `json:"preStartCmd,omitempty"`
@@ -55,6 +57,11 @@ func (u *Unikontainer) writeMonitorSpec(rootfsParams types.RootfsParams, monRes 
 	mSpec := u.buildMonitorSpec(rootfsParams, monRes)
 
 	mSpec.NetworkType = u.getNetworkType()
+	podNet, err := u.podNet()
+	if err != nil {
+		return err
+	}
+	mSpec.PodNet = podNet
 	mSpec.User = u.Spec.Process.User
 	mSpec.ExecCaps = MonitorExecCapabilities(u.Spec)
 

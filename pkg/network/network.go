@@ -21,7 +21,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/jackpal/gateway"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -179,7 +178,7 @@ func getInterfaceInfo(iface string) (Interface, error) {
 	if ipAddress == "" {
 		return Interface{}, fmt.Errorf("failed to find IPv4 address for %q", iface)
 	}
-	gateway, err := gateway.DiscoverGateway()
+	gateway, err := defaultGateway(ief.Index)
 	if err != nil {
 		return Interface{}, err
 	}
@@ -191,6 +190,23 @@ func getInterfaceInfo(iface string) (Interface, error) {
 		MAC:            IfMAC,
 		MTU:            ief.MTU,
 	}, nil
+}
+
+// defaultGateway is the gateway of the IPv4 default route through the
+// interface. It asks netlink, which answers for the calling thread's network
+// namespace (/proc/net/route shows the process leader's).
+func defaultGateway(ifindex int) (net.IP, error) {
+	routes, err := netlink.RouteListFiltered(netlink.FAMILY_V4,
+		&netlink.Route{LinkIndex: ifindex}, netlink.RT_FILTER_OIF)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range routes {
+		if (r.Dst == nil || r.Dst.String() == "0.0.0.0/0") && r.Gw != nil {
+			return r.Gw, nil
+		}
+	}
+	return nil, errors.New("no gateway found")
 }
 
 func addIngressQdisc(link netlink.Link) error {
@@ -386,6 +402,22 @@ func deleteIngressQdisc(link netlink.Link) error {
 // scanning all links in the current network namespace and returning the first
 // non-loopback link that has an IP address and a default route.
 func discoverContainerIface() (netlink.Link, error) {
+	return retryDump(discoverContainerIfaceOnce)
+}
+
+// retryDump runs f again while a netlink dump it made was interrupted: links
+// or addresses that change during a dump, as another container of the pod
+// sets up its tap, make the kernel flag it inconsistent.
+func retryDump[T any](f func() (T, error)) (T, error) {
+	for i := 0; ; i++ {
+		v, err := f()
+		if !errors.Is(err, netlink.ErrDumpInterrupted) || i == 9 {
+			return v, err
+		}
+	}
+}
+
+func discoverContainerIfaceOnce() (netlink.Link, error) {
 	handle, err := netlink.NewHandle()
 	if err != nil {
 		return nil, err
@@ -408,6 +440,9 @@ func discoverContainerIface() (netlink.Link, error) {
 		}
 		// must have addresses configured
 		addrs, err := handle.AddrList(link, netlink.FAMILY_ALL)
+		if errors.Is(err, netlink.ErrDumpInterrupted) {
+			return nil, err
+		}
 		if err != nil {
 			netlog.Debugf("skipping interface %s: failed to list addresses: %v", attrs.Name, err)
 			continue
@@ -418,6 +453,9 @@ func discoverContainerIface() (netlink.Link, error) {
 		}
 		// look for a default route on this interface
 		routes, err := handle.RouteList(link, netlink.FAMILY_ALL)
+		if errors.Is(err, netlink.ErrDumpInterrupted) {
+			return nil, err
+		}
 		if err != nil {
 			netlog.Debugf("skipping interface %s: failed to list routes: %v", attrs.Name, err)
 			continue

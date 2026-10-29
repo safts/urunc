@@ -320,16 +320,25 @@ func (u *Unikontainer) SetRunningState() error {
 }
 
 // SetupNet creates the sandbox's network device (tap) in the current network
-// namespace and returns its parameters; uid and gid own the tap device.
-func SetupNet(networkType string, uid, gid uint32) (types.NetDevParams, error) {
+// namespace and returns its parameters; uid and gid own the tap device. A
+// container in a pod that runs service VMs (podNet) gets its part of the pod
+// network instead, and fails without it.
+func SetupNet(networkType string, podNet *network.PodNetwork, uid, gid uint32) (types.NetDevParams, error) {
 	uniklog.WithField("network type", networkType).Debug("Retrieved network type")
 	netArgs := types.NetDevParams{}
-	netManager, err := network.NewNetworkManager(networkType)
-	if err != nil {
-		return netArgs, fmt.Errorf("failed to create network manager for %s type: %v", networkType, err)
+	var netManager network.Manager = podNet
+	if podNet == nil {
+		var err error
+		netManager, err = network.NewNetworkManager(networkType)
+		if err != nil {
+			return netArgs, fmt.Errorf("failed to create network manager for %s type: %v", networkType, err)
+		}
 	}
 
 	networkInfo, err := netManager.NetworkSetup(uid, gid)
+	if err != nil && podNet != nil {
+		return netArgs, fmt.Errorf("failed to set up the pod network: %w", err)
+	}
 	if err != nil {
 		// TODO: Handle this case better. We do not need to show an error
 		// since there was no network in the container. Therefore, we
@@ -783,7 +792,11 @@ func (u *Unikontainer) Exec(metrics m.Writer) error {
 	}
 
 	// handle network
-	netArgs, err := SetupNet(u.getNetworkType(), u.Spec.Process.User.UID, u.Spec.Process.User.GID)
+	podNet, err := u.podNet()
+	if err != nil {
+		return err
+	}
+	netArgs, err := SetupNet(u.getNetworkType(), podNet, u.Spec.Process.User.UID, u.Spec.Process.User.GID)
 	if err != nil {
 		uniklog.Errorf("failed to setup network: %v", err)
 		return err
@@ -1278,7 +1291,12 @@ func (u *Unikontainer) Kill() error {
 		return err
 	}
 
-	err = network.CleanupAllUruncTaps()
+	// In a pod network the other VMs of the pod keep theirs.
+	if podNet, perr := u.podNet(); perr == nil && podNet != nil {
+		err = podNet.Release()
+	} else {
+		err = network.CleanupAllUruncTaps()
+	}
 	if err != nil {
 		uniklog.Errorf("failed to cleanup tap devices: %v", err)
 	}
@@ -1367,6 +1385,12 @@ func (u *Unikontainer) releaseSandboxNet() error {
 		defer func() { _ = unix.Close(fd) }()
 		if err := unix.Setns(fd, unix.CLONE_NEWNET); err != nil {
 			errCh <- fmt.Errorf("error joining namespace: %w", err)
+			return
+		}
+		// In a pod network only the container's own tap: a sibling's that
+		// its booting VM has not opened yet has no carrier either.
+		if podNet, perr := u.podNet(); perr == nil && podNet != nil {
+			errCh <- podNet.Release()
 			return
 		}
 		errCh <- network.ReclaimStaleUruncTaps()

@@ -13,8 +13,8 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/cyphar/filepath-securejoin v0.7.0
 	github.com/elastic/go-seccomp-bpf v1.6.0
+	github.com/google/nftables v0.3.0
 	github.com/hashicorp/go-version v1.9.0
-	github.com/jackpal/gateway v1.2.0
 	github.com/moby/sys/mountinfo v0.7.2
 	github.com/moby/sys/user v0.4.1
 	github.com/moby/sys/userns v0.2.1
@@ -67,6 +67,8 @@ require (
 	github.com/klauspost/compress v1.20.1 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
+	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42 // indirect
+	github.com/mdlayher/socket v0.5.0 // indirect
 	github.com/moby/sys/capability v0.4.0 // indirect
 	github.com/moby/sys/sequential v0.7.0 // indirect
 	github.com/mrunalp/fileutils v0.5.1 // indirect
