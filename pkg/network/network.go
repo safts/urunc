@@ -21,7 +21,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/jackpal/gateway"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -179,7 +178,7 @@ func getInterfaceInfo(iface string) (Interface, error) {
 	if ipAddress == "" {
 		return Interface{}, fmt.Errorf("failed to find IPv4 address for %q", iface)
 	}
-	gateway, err := gateway.DiscoverGateway()
+	gateway, err := defaultGateway(ief.Index)
 	if err != nil {
 		return Interface{}, err
 	}
@@ -191,6 +190,23 @@ func getInterfaceInfo(iface string) (Interface, error) {
 		MAC:            IfMAC,
 		MTU:            ief.MTU,
 	}, nil
+}
+
+// defaultGateway is the gateway of the IPv4 default route through the
+// interface. It asks netlink, which answers for the calling thread's network
+// namespace (/proc/net/route shows the process leader's).
+func defaultGateway(ifindex int) (net.IP, error) {
+	routes, err := netlink.RouteListFiltered(netlink.FAMILY_V4,
+		&netlink.Route{LinkIndex: ifindex}, netlink.RT_FILTER_OIF)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range routes {
+		if (r.Dst == nil || r.Dst.String() == "0.0.0.0/0") && r.Gw != nil {
+			return r.Gw, nil
+		}
+	}
+	return nil, errors.New("no gateway found")
 }
 
 func addIngressQdisc(link netlink.Link) error {
