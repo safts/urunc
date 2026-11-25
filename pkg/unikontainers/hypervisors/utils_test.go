@@ -48,28 +48,27 @@ func TestBytesToMiB(t *testing.T) {
 	}
 }
 
-func TestBytesToMB(t *testing.T) {
+func TestBytesToStringMB(t *testing.T) {
 	t.Parallel()
 
-	const mb uint64 = 1000 * 1000
+	const mib uint64 = 1024 * 1024
 
 	cases := []struct {
 		name     string
 		input    uint64
-		expected uint64
+		expected string
 	}{
-		{"zero", 0, 0},
-		{"less than one MB truncates to zero", mb - 1, 0},
-		{"exactly one MB", mb, 1},
-		{"exactly two MB", 2 * mb, 2},
-		{"non-multiple truncates down", mb + (mb / 2), 1},
-		{"large value", 1024 * mb, 1024},
+		{"zero uses the default", 0, "256"},
+		{"less than one MiB uses the default", mib - 1, "256"},
+		{"exactly one MiB", mib, "1"},
+		{"non-multiple truncates down", mib + (mib / 2), "1"},
+		{"3Gi", 3 * 1024 * mib, "3072"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.expected, bytesToMB(tc.input))
+			assert.Equal(t, tc.expected, BytesToStringMB(tc.input))
 		})
 	}
 }

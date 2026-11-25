@@ -151,11 +151,11 @@ func TestQemuBuildExecCmd(t *testing.T) {
 			},
 		},
 		{
-			name: "custom MemSizeB renders -m in MB",
+			name: "custom MemSizeB renders -m in MiB",
 			args: types.ExecArgs{
 				UnikernelPath: testKernelPath,
 				Command:       testCommand,
-				MemSizeB:      512 * 1000 * 1000,
+				MemSizeB:      512 * 1024 * 1024,
 			},
 			unikernel:   &fakeUnikernel{},
 			mustContain: []string{"-m 512M"},

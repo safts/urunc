@@ -23,7 +23,7 @@ import (
 	"github.com/urunc-dev/urunc/pkg/unikontainers/types"
 )
 
-const DefaultMemory uint64 = 256 // The default memory for every hypervisor: 256 MB
+const DefaultMemory uint64 = 256 // The default memory for every hypervisor: 256 MiB
 
 type VmmType string
 

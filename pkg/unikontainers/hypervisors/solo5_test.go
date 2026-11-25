@@ -52,8 +52,8 @@ func runSolo5BuildExecCmd(t *testing.T, vmm types.VMM) {
 			mustNotContain: []string{"--net:", "--block:"},
 		},
 		{
-			name:        "custom MemSizeB renders --mem in MB",
-			args:        types.ExecArgs{UnikernelPath: testKernelPath, MemSizeB: 512 * 1000 * 1000},
+			name:        "custom MemSizeB renders --mem in MiB",
+			args:        types.ExecArgs{UnikernelPath: testKernelPath, MemSizeB: 512 * 1024 * 1024},
 			unikernel:   &fakeUnikernel{},
 			mustContain: []string{"--mem=512"},
 		},
