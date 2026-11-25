@@ -197,7 +197,7 @@ Each monitor subsection supports the following options:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `default_memory_mb` | integer | `256` | Default memory allocation in megabytes |
+| `default_memory_mb` | integer | `256` | Default memory allocation in MiB |
 | `default_vcpus` | integer | `1` | Default number of virtual CPUs |
 | `path` | string | (empty) | Optional custom path to the monitor binary. If not specified, urunc will search for the binary in PATH |
 | `data_path` | string | (empty) | Optional custom path for the monitor's data file directory |
